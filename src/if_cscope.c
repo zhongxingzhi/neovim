@@ -18,6 +18,7 @@
 # include <sys/wait.h>
 #endif
 #include "if_cscope.h"
+#include "io.h"
 
 static void cs_usage_msg __ARGS((csid_e x));
 static int cs_add __ARGS((exarg_T *eap));

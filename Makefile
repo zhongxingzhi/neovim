@@ -1,10 +1,10 @@
 CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=Debug
 
-test: build/src/vim
-	cd src/testdir && make
-
 build/src/vim: deps
 	cd build && make
+
+test: build/src/vim
+	cd src/testdir && make
 
 deps: .deps/usr/lib/libuv.a
 

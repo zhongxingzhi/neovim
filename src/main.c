@@ -10,10 +10,7 @@
 #define EXTERN
 #include "vim.h"
 
-#ifdef SPAWNO
-# include <spawno.h>            /* special MS-DOS swapping library */
-#endif
-
+#include "io.h"
 
 /* Maximum number of commands from + or -c arguments. */
 #define MAX_ARG_CMDS 10
@@ -309,6 +306,7 @@ char        **argv;
    * Note that we may use mch_exit() before mch_init()!
    */
   mch_init();
+  io_init();
   TIME_MSG("shell init");
 
 

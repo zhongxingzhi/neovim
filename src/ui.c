@@ -17,6 +17,7 @@
  */
 
 #include "vim.h"
+#include "io.h"
 
 
 void ui_write(s, len)
@@ -313,14 +314,6 @@ int vim_is_input_buf_empty()         {
   return inbufcount == 0;
 }
 
-#if defined(FEAT_OLE) || defined(PROTO)
-int vim_free_in_input_buf()         {
-  return INBUFLEN - inbufcount;
-}
-
-#endif
-
-
 /*
  * Return the current contents of the input buffer and make it empty.
  * The returned pointer must be passed to set_input_buf() later.
@@ -359,59 +352,6 @@ char_u      *p;
     vim_free(gap);
   }
 }
-
-#if defined(FEAT_GUI) \
-  || defined(FEAT_MOUSE_GPM) || defined(FEAT_SYSMOUSE) \
-  || defined(FEAT_XCLIPBOARD) || defined(VMS) \
-  || defined(FEAT_SNIFF) || defined(FEAT_CLIENTSERVER) \
-  || defined(PROTO)
-/*
- * Add the given bytes to the input buffer
- * Special keys start with CSI.  A real CSI must have been translated to
- * CSI KS_EXTRA KE_CSI.  K_SPECIAL doesn't require translation.
- */
-void add_to_input_buf(s, len)
-char_u  *s;
-int len;
-{
-  if (inbufcount + len > INBUFLEN + MAX_KEY_CODE_LEN)
-    return;         /* Shouldn't ever happen! */
-
-  if ((State & (INSERT|CMDLINE)) && hangul_input_state_get())
-    if ((len = hangul_input_process(s, len)) == 0)
-      return;
-
-  while (len--)
-    inbuf[inbufcount++] = *s++;
-}
-#endif
-
-#if ((defined(FEAT_XIM) || defined(FEAT_DND)) && defined(FEAT_GUI_GTK)) \
-  || defined(FEAT_GUI_MSWIN) \
-  || defined(FEAT_GUI_MAC) \
-  || (defined(FEAT_MBYTE) && defined(FEAT_MBYTE_IME)) \
-  || (defined(FEAT_GUI) && (!defined(USE_ON_FLY_SCROLL) \
-  || defined(FEAT_MENU))) \
-  || defined(PROTO)
-/*
- * Add "str[len]" to the input buffer while escaping CSI bytes.
- */
-void add_to_input_buf_csi(char_u *str, int len)          {
-  int i;
-  char_u buf[2];
-
-  for (i = 0; i < len; ++i) {
-    add_to_input_buf(str + i, 1);
-    if (str[i] == CSI) {
-      /* Turn CSI into K_CSI. */
-      buf[0] = KS_EXTRA;
-      buf[1] = (int)KE_CSI;
-      add_to_input_buf(buf, 2);
-    }
-  }
-}
-
-#endif
 
 void push_raw_key(s, len)
 char_u  *s;
@@ -574,21 +514,11 @@ void read_error_exit()          {
   preserve_exit();
 }
 
-#if defined(CURSOR_SHAPE) || defined(PROTO)
 /*
  * May update the shape of the cursor.
  */
-void ui_cursor_shape()          {
-  term_cursor_shape();
+void ui_cursor_shape() { }
 
-
-  conceal_check_cursur_line();
-}
-
-#endif
-
-#if defined(FEAT_CLIPBOARD) || defined(FEAT_GUI) || defined(FEAT_RIGHTLEFT) \
-  || defined(FEAT_MBYTE) || defined(PROTO)
 /*
  * Check bounds for column number
  */
@@ -614,7 +544,6 @@ int row;
     return (int)screen_Rows - 1;
   return row;
 }
-#endif
 
 /*
  * Stuff for the X clipboard.  Shared between VMS and Unix.

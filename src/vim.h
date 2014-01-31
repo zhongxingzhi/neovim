@@ -189,13 +189,8 @@ Error: configure did not run properly.Check auto/config.log.
 
 #define NUMBUFLEN 30        /* length of a buffer to store a number in ASCII */
 
-/*
- * Shorthand for unsigned variables. Many systems, but not all, have u_char
- * already defined, so we use char_u to avoid trouble.
- */
-typedef unsigned char char_u;
-typedef unsigned short short_u;
-typedef unsigned int int_u;
+#include "types.h"
+
 /* Make sure long_u is big enough to hold a pointer.
  * On Win64, longs are 32 bits and pointers are 64 bits.
  * For printf() and scanf(), we need to take care of long_u specifically. */
