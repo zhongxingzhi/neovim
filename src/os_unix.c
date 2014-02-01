@@ -127,14 +127,10 @@ static int save_patterns __ARGS((int num_pat, char_u **pat, int *num_file,
 
 /* volatile because it is used in signal handler sig_winch(). */
 static volatile int do_resize = FALSE;
-static char_u   *extra_shell_arg = NULL;
+// static char_u   *extra_shell_arg = NULL;
 static int show_shell_mess = TRUE;
 /* volatile because it is used in signal handler deathtrap(). */
 static volatile int deadly_signal = 0;      /* The signal we caught */
-/* volatile because it is used in signal handler deathtrap(). */
-static volatile int in_mch_delay = FALSE;    /* sleeping in mch_delay() */
-
-static int curr_tmode = TMODE_COOK;     /* contains current terminal mode */
 
 
 #ifdef SYS_SIGLIST_DECLARED
@@ -1742,81 +1738,6 @@ void mch_free_mem()          {
 }
 
 #endif
-
-static void exit_scroll __ARGS((void));
-
-/*
- * Output a newline when exiting.
- * Make sure the newline goes to the same stream as the text.
- */
-static void exit_scroll()                 {
-  if (silent_mode)
-    return;
-  if (newline_on_exit || msg_didout) {
-    if (msg_use_printf()) {
-      if (info_message)
-        mch_msg("\n");
-      else
-        mch_errmsg("\r\n");
-    } else
-      out_char('\n');
-  } else   {
-    restore_cterm_colors();             /* get original colors back */
-    msg_clr_eos_force();                /* clear the rest of the display */
-    windgoto((int)Rows - 1, 0);         /* may have moved the cursor */
-  }
-}
-
-void mch_exit(r)
-int r;
-{
-  exiting = TRUE;
-
-
-  {
-    settmode(TMODE_COOK);
-    mch_restore_title(3);       /* restore xterm title and icon name */
-    /*
-     * When t_ti is not empty but it doesn't cause swapping terminal
-     * pages, need to output a newline when msg_didout is set.  But when
-     * t_ti does swap pages it should not go to the shell page.  Do this
-     * before stoptermcap().
-     */
-    if (swapping_screen() && !newline_on_exit)
-      exit_scroll();
-
-    /* Stop termcap: May need to check for T_CRV response, which
-     * requires RAW mode. */
-    stoptermcap();
-
-    /*
-     * A newline is only required after a message in the alternate screen.
-     * This is set to TRUE by wait_return().
-     */
-    if (!swapping_screen() || newline_on_exit)
-      exit_scroll();
-
-    /* Cursor may have been switched off without calling starttermcap()
-     * when doing "vim -u vimrc" and vimrc contains ":q". */
-    if (full_screen)
-      cursor_on();
-  }
-  out_flush();
-  ml_close_all(TRUE);           /* remove all memfiles */
-  may_core_dump();
-
-#ifdef MACOS_CONVERT
-  mac_conv_cleanup();
-#endif
-
-
-
-#ifdef EXITFREE
-  free_all_mem();
-#endif
-
-  exit(r);
-}
 
 static void may_core_dump()                 {
   if (deadly_signal != 0) {

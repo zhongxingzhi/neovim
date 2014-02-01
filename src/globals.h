@@ -1217,6 +1217,13 @@ EXTERN FILE *time_fd INIT(= NULL);  /* where to write startup timing */
 EXTERN int ignored;
 EXTERN char *ignoredp;
 
+/* Temporary globals used while we migrate from os_unix */
+EXTERN volatile int in_mch_delay INIT(= FALSE);  /* sleeping in mch_delay() */
+EXTERN int curr_tmode INIT(= TMODE_COOK);  /* contains current terminal mode */
+EXTERN char_u *extra_shell_arg INIT(= NULL);
+/* end TEMP */
+
+
 /*
  * Optional Farsi support.  Include it here, so EXTERN and INIT are defined.
  */

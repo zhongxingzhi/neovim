@@ -43,7 +43,6 @@ int mch_can_exe __ARGS((char_u *name));
 int mch_nodetype __ARGS((char_u *name));
 void mch_early_init __ARGS((void));
 void mch_free_mem __ARGS((void));
-void mch_exit __ARGS((int r));
 void mch_settmode __ARGS((int tmode));
 void get_stty __ARGS((void));
 void mch_setmouse __ARGS((int on));
@@ -52,7 +51,6 @@ int mch_screenmode __ARGS((char_u *arg));
 int mch_get_shellsize __ARGS((void));
 void mch_set_shellsize __ARGS((void));
 void mch_new_shellsize __ARGS((void));
-int mch_call_shell __ARGS((char_u *cmd, int options));
 void mch_breakcheck __ARGS((void));
 int mch_expandpath __ARGS((garray_T *gap, char_u *path, int flags));
 int mch_expand_wildcards __ARGS((int num_pat, char_u **pat, int *num_file,

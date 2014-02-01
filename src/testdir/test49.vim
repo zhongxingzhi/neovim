@@ -326,6 +326,7 @@ function! ExtraVim(...)
     " are extended up to the end of a closed fold.  This also speeds things up
     " considerably.
     set nofoldenable
+    redir > /tmp/extra-debug.lig
 
     " Open a buffer for this test script and copy the test environment to
     " a temporary file.  Take account of parts relevant for the extra script
@@ -348,6 +349,7 @@ function! ExtraVim(...)
     " environment.  The source line number where the extra script will be
     " appended, needs to be passed as variable "ExtraVimBegin" to the script.
     let extra_script = tempname()
+    let extra_script = '/tmp/extra_script.txt'
     exec "!echo 'source " . g:ExtraVimTestEnv . "' >" . extra_script
     let extra_begin = 1
 
@@ -445,7 +447,8 @@ function! ExtraVim(...)
 
     " Close the buffer for the script and create an (empty) resultfile.
     bwipeout
-    let resultfile = tempname()
+    " let resultfile = tempname()
+    let resultfile = '/tmp/resultfile.txt'
     exec "!>" . resultfile
 
     " Run the script in an extra vim.  Switch to extra modus by passing the
@@ -461,6 +464,7 @@ function! ExtraVim(...)
 	\ " -c 'let ExtraVimBegin = " . extra_begin . "'" .
 	\ " -c 'let ExtraVimResult = \"" . resultfile . "\"'" . breakpoints .
 	\ " -S " . extra_script
+    redir END
 
     " Build the resulting sum for resultfile and add it to g:Xpath.  Add Xout
     " information provided by the extra Vim process to the test output.
@@ -482,8 +486,8 @@ function! ExtraVim(...)
     let g:Xpath = g:Xpath + sum
 
     " Delete the extra script and the resultfile.
-    call delete(extra_script)
-    call delete(resultfile)
+    " call delete(extra_script)
+    " call delete(resultfile)
 
     " Switch back to the buffer that was active when this function was entered.
     exec "buffer" current_buffnr
