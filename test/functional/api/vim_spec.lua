@@ -1,6 +1,8 @@
 -- Sanity checks for vim_* API calls via msgpack-rpc
 local helpers = require('test.functional.helpers')
-local clear, nvim, eq, neq, ok = helpers.clear, helpers.nvim, helpers.eq, helpers.neq, helpers.ok
+local Screen = require('test.functional.ui.screen')
+local clear, nvim, eq, neq = helpers.clear, helpers.nvim, helpers.eq, helpers.neq
+local ok, nvim_async, feed = helpers.ok, helpers.nvim_async, helpers.feed
 
 
 describe('vim_* functions', function()
@@ -26,6 +28,20 @@ describe('vim_* functions', function()
       nvim('command', 'let g:v1 = "a"')
       nvim('command', 'let g:v2 = [1, 2, {"v3": 3}]')
       eq({v1 = 'a', v2 = {1, 2, {v3 = 3}}}, nvim('eval', 'g:'))
+    end)
+
+    it('handles NULL-initialized strings correctly', function()
+      eq(1, nvim('eval',"matcharg(1) == ['', '']"))
+      eq({'', ''}, nvim('eval','matcharg(1)'))
+    end)
+  end)
+
+  describe('call_function', function()
+    it('works', function()
+      nvim('call_function', 'setqflist', {{{ filename = 'something', lnum = 17}}, 'r'})
+      eq(17, nvim('call_function', 'getqflist', {})[1].lnum)
+      eq(17, nvim('call_function', 'eval', {17}))
+      eq('foo', nvim('call_function', 'simplify', {'this/./is//redundant/../../../foo'}))
     end)
   end)
 
@@ -55,6 +71,13 @@ describe('vim_* functions', function()
       nvim('set_var', 'lua', {1, 2, {['3'] = 1}})
       eq({1, 2, {['3'] = 1}}, nvim('get_var', 'lua'))
       eq({1, 2, {['3'] = 1}}, nvim('eval', 'g:lua'))
+    end)
+
+    it('set_var returns the old value', function()
+      local val1 = {1, 2, {['3'] = 1}}
+      local val2 = {4, 7}
+      eq(nil, nvim('set_var', 'lua', val1))
+      eq(val1, nvim('set_var', 'lua', val2))
     end)
 
     it('truncates values with NULs in them', function()
@@ -117,7 +140,7 @@ describe('vim_* functions', function()
 
   describe('replace_termcodes', function()
     it('escapes K_SPECIAL as K_SPECIAL KS_SPECIAL KE_FILLER', function()
-      eq(helpers.nvim('replace_termcodes', '\x80', true, true, true), '\x80\xfeX')
+      eq(helpers.nvim('replace_termcodes', '\128', true, true, true), '\128\254X')
     end)
 
     it('leaves non K_SPECIAL string unchanged', function()
@@ -153,6 +176,104 @@ describe('vim_* functions', function()
       -- Because of the double escaping this is neq
       neq(nvim('get_var', 'x2'), '…')
       eq(nvim('get_var', 'x3'), '…')
+    end)
+  end)
+
+  describe('err_write', function()
+    before_each(function()
+      clear()
+      screen = Screen.new(40, 8)
+      screen:attach()
+      screen:set_default_attr_ids({
+        [1] = {foreground = Screen.colors.White, background = Screen.colors.Red},
+        [2] = {bold = true, foreground = Screen.colors.SeaGreen}
+      })
+      screen:set_default_attr_ignore( {{bold=true, foreground=Screen.colors.Blue}} )
+    end)
+
+    it('can show one line', function()
+      nvim_async('err_write', 'has bork\n')
+      screen:expect([[
+        ^                                        |
+        ~                                       |
+        ~                                       |
+        ~                                       |
+        ~                                       |
+        ~                                       |
+        ~                                       |
+        {1:has bork}                                |
+      ]])
+    end)
+
+    it('shows return prompt when more than &cmdheight lines', function()
+      nvim_async('err_write', 'something happened\nvery bad\n')
+      screen:expect([[
+        ~                                       |
+        ~                                       |
+        ~                                       |
+        ~                                       |
+        ~                                       |
+        {1:something happened}                      |
+        {1:very bad}                                |
+        {2:Press ENTER or type command to continue}^ |
+      ]])
+    end)
+
+    it('shows return prompt after all lines are shown', function()
+      nvim_async('err_write', 'FAILURE\nERROR\nEXCEPTION\nTRACEBACK\n')
+      screen:expect([[
+        ~                                       |
+        ~                                       |
+        ~                                       |
+        {1:FAILURE}                                 |
+        {1:ERROR}                                   |
+        {1:EXCEPTION}                               |
+        {1:TRACEBACK}                               |
+        {2:Press ENTER or type command to continue}^ |
+      ]])
+    end)
+
+    it('handles multiple calls', function()
+      -- without linebreak text is joined to one line
+      nvim_async('err_write', 'very ')
+      nvim_async('err_write', 'fail\n')
+      screen:expect([[
+        ^                                        |
+        ~                                       |
+        ~                                       |
+        ~                                       |
+        ~                                       |
+        ~                                       |
+        ~                                       |
+        {1:very fail}                               |
+      ]])
+
+      -- shows up to &cmdheight lines
+      nvim_async('err_write', 'more fail\n')
+      nvim_async('err_write', 'too fail\n')
+      screen:expect([[
+        ~                                       |
+        ~                                       |
+        ~                                       |
+        ~                                       |
+        ~                                       |
+        {1:very fail}                               |
+        {1:more fail}                               |
+        {2:Press ENTER or type command to continue}^ |
+      ]])
+
+      -- shows the rest after return
+      feed('<cr>')
+      screen:expect([[
+        ~                                       |
+        ~                                       |
+        ~                                       |
+        {1:very fail}                               |
+        {1:more fail}                               |
+        {2:Press ENTER or type command to continue} |
+        {1:too fail}                                |
+        {2:Press ENTER or type command to continue}^ |
+      ]])
     end)
   end)
 

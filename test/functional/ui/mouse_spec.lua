@@ -4,13 +4,12 @@ local clear, feed, nvim = helpers.clear, helpers.feed, helpers.nvim
 local insert, execute = helpers.insert, helpers.execute
 
 describe('Mouse input', function()
-  local screen, hlgroup_colors
+  local screen
 
-  setup(function()
-    hlgroup_colors = {
-      Visual = nvim('name_to_color', 'LightGrey'),
-    }
-  end)
+  local hlgroup_colors = {
+    NonText = Screen.colors.Blue,
+    Visual = Screen.colors.LightGrey
+  }
 
   before_each(function()
     clear()
@@ -21,13 +20,15 @@ describe('Mouse input', function()
     screen = Screen.new(25, 5)
     screen:attach()
     screen:set_default_attr_ids({
-      [1] = {background = hlgroup_colors.Visual}
+      [1] = {background = hlgroup_colors.Visual},
+      [2] = {bold = true}
     })
+    screen:set_default_attr_ignore( {{bold=true, foreground=hlgroup_colors.NonText}} )
     feed('itesting<cr>mouse<cr>support and selection<esc>')
     screen:expect([[
       testing                  |
       mouse                    |
-      support and selectio^    |
+      support and selectio^n    |
       ~                        |
                                |
     ]])
@@ -41,19 +42,46 @@ describe('Mouse input', function()
     feed('<LeftMouse><2,1>')
     screen:expect([[
       testing                  |
-      mo^se                    |
+      mo^use                    |
       support and selection    |
       ~                        |
                                |
     ]])
     feed('<LeftMouse><0,0>')
     screen:expect([[
-      ^esting                  |
+      ^testing                  |
       mouse                    |
       support and selection    |
       ~                        |
                                |
     ]])
+  end)
+
+  it('left click in tabline switches to tab', function()
+    local tab_attrs = {
+      tab  = { background=Screen.colors.LightGrey, underline=true },
+      sel  = { bold=true },
+      fill = { reverse=true }
+    }
+    execute('%delete')
+    insert('this is foo')
+    execute('silent file foo | tabnew | file bar')
+    insert('this is bar')
+    screen:expect([[
+      {tab: + foo }{sel: + bar }{fill:          }{tab:X}|
+      this is ba^r              |
+      ~                        |
+      ~                        |
+                               |
+    ]], tab_attrs)
+    feed('<LeftMouse><4,0>')
+    screen:expect([[
+      {sel: + foo }{tab: + bar }{fill:          }{tab:X}|
+      this is fo^o              |
+      ~                        |
+      ~                        |
+                               |
+    ]], tab_attrs)
   end)
 
   it('left drag changes visual selection', function()
@@ -61,7 +89,7 @@ describe('Mouse input', function()
     feed('<LeftMouse><2,1>')
     screen:expect([[
       testing                  |
-      mo^se                    |
+      mo^use                    |
       support and selection    |
       ~                        |
                                |
@@ -69,27 +97,64 @@ describe('Mouse input', function()
     feed('<LeftDrag><4,1>')
     screen:expect([[
       testing                  |
-      mo{1:us}^                    |
+      mo{1:us}^e                    |
       support and selection    |
       ~                        |
-      -- VISUAL --             |
+      {2:-- VISUAL --}             |
     ]])
     feed('<LeftDrag><2,2>')
     screen:expect([[
       testing                  |
       mo{1:use }                   |
-      {1:su}^port and selection    |
+      {1:su}^pport and selection    |
       ~                        |
-      -- VISUAL --             |
+      {2:-- VISUAL --}             |
     ]])
     feed('<LeftDrag><0,0>')
     screen:expect([[
-      ^{1:esting }                 |
+      ^t{1:esting }                 |
       {1:mou}se                    |
       support and selection    |
       ~                        |
-      -- VISUAL --             |
+      {2:-- VISUAL --}             |
     ]])
+  end)
+
+  it('left drag changes visual selection after tab click', function()
+    local tab_attrs = {
+      tab  = { background=Screen.colors.LightGrey, underline=true },
+      sel  = { bold=true },
+      fill = { reverse=true },
+      vis  = { background=Screen.colors.LightGrey }
+    }
+    execute('silent file foo | tabnew | file bar')
+    insert('this is bar')
+    execute('tabprevious')  -- go to first tab
+    screen:expect([[
+      {sel: + foo }{tab: + bar }{fill:          }{tab:X}|
+      mouse                    |
+      support and selectio^n    |
+      ~                        |
+                               |
+    ]], tab_attrs)
+    feed('<LeftMouse><10,0><LeftRelease>')  -- go to second tab
+    helpers.wait()
+    feed('<LeftMouse><0,1>')
+    screen:expect([[
+      {tab: + foo }{sel: + bar }{fill:          }{tab:X}|
+      ^this is bar              |
+      ~                        |
+      ~                        |
+                               |
+    ]], tab_attrs)
+    feed('<LeftDrag><4,1>')
+    screen:expect([[
+      {tab: + foo }{sel: + bar }{fill:          }{tab:X}|
+      {vis:this}^ is bar              |
+      ~                        |
+      ~                        |
+      {sel:-- VISUAL --}             |
+    ]], tab_attrs)
   end)
 
   it('two clicks will select the word and enter VISUAL', function()
@@ -97,9 +162,9 @@ describe('Mouse input', function()
     screen:expect([[
       testing                  |
       mouse                    |
-      {1:suppor}^ and selection    |
+      {1:suppor}^t and selection    |
       ~                        |
-      -- VISUAL --             |
+      {2:-- VISUAL --}             |
     ]])
   end)
 
@@ -108,9 +173,9 @@ describe('Mouse input', function()
     screen:expect([[
       testing                  |
       mouse                    |
-      {1:su}^{1:port and selection }   |
+      {1:su}^p{1:port and selection }   |
       ~                        |
-      -- VISUAL LINE --        |
+      {2:-- VISUAL LINE --}        |
     ]])
   end)
 
@@ -119,16 +184,16 @@ describe('Mouse input', function()
     screen:expect([[
       testing                  |
       mouse                    |
-      su^port and selection    |
+      su^pport and selection    |
       ~                        |
-      -- VISUAL BLOCK --       |
+      {2:-- VISUAL BLOCK --}       |
     ]])
   end)
 
   it('right click extends visual selection to the clicked location', function()
     feed('<LeftMouse><0,0>')
     screen:expect([[
-      ^esting                  |
+      ^testing                  |
       mouse                    |
       support and selection    |
       ~                        |
@@ -138,21 +203,22 @@ describe('Mouse input', function()
     screen:expect([[
       {1:testing }                 |
       {1:mouse }                   |
-      {1:su}^port and selection    |
+      {1:su}^pport and selection    |
       ~                        |
-      -- VISUAL --             |
+      {2:-- VISUAL --}             |
     ]])
   end)
 
   it('ctrl + left click will search for a tag', function()
+    nvim('set_option', 'tags', './non-existent-tags-file')
     feed('<C-LeftMouse><0,0>')
     screen:expect([[
       E433: No tags file       |
       E426: tag not found: test|
       ing                      |
       Press ENTER or type comma|
-      nd to continue^          |
-    ]])
+      nd to continue^           |
+    ]],nil,true)
     feed('<cr>')
   end)
 
@@ -170,12 +236,14 @@ describe('Mouse input', function()
     ]])
     screen:try_resize(53, 14)
     execute('sp', 'vsp')
+    screen:set_default_attr_ignore( {{bold=true, foreground=hlgroup_colors.NonText},
+            {reverse=true}, {bold=true, reverse=true}} )
     screen:expect([[
       lines                     |lines                     |
       to                        |to                        |
       test                      |test                      |
       mouse scrolling           |mouse scrolling           |
-      ^                         |                          |
+      ^                          |                          |
       ~                         |~                         |
       [No Name] [+]              [No Name] [+]             |
       to                                                   |
@@ -189,7 +257,7 @@ describe('Mouse input', function()
     feed('<MouseUp><0,0>')
     screen:expect([[
       mouse scrolling           |lines                     |
-      ^                         |to                        |
+      ^                          |to                        |
       ~                         |test                      |
       ~                         |mouse scrolling           |
       ~                         |                          |
@@ -206,7 +274,7 @@ describe('Mouse input', function()
     feed('<MouseDown><27,0>')
     screen:expect([[
       mouse scrolling           |text                      |
-      ^                         |with                      |
+      ^                          |with                      |
       ~                         |many                      |
       ~                         |lines                     |
       ~                         |to                        |
@@ -223,7 +291,7 @@ describe('Mouse input', function()
     feed('<MouseDown><27,7><MouseDown>')
     screen:expect([[
       mouse scrolling           |text                      |
-      ^                         |with                      |
+      ^                          |with                      |
       ~                         |many                      |
       ~                         |lines                     |
       ~                         |to                        |

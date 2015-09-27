@@ -54,6 +54,7 @@
 #include "nvim/cursor.h"
 #include "nvim/eval.h"
 #include "nvim/fileio.h"
+#include "nvim/func_attr.h"
 #include "nvim/main.h"
 #include "nvim/mark.h"
 #include "nvim/mbyte.h"
@@ -69,14 +70,15 @@
 #include "nvim/sha256.h"
 #include "nvim/spell.h"
 #include "nvim/strings.h"
-#include "nvim/term.h"
+#include "nvim/ui.h"
+#include "nvim/version.h"
 #include "nvim/tempfile.h"
 #include "nvim/undo.h"
 #include "nvim/window.h"
 #include "nvim/os/os.h"
 #include "nvim/os/input.h"
 
-#ifndef UNIX            /* it's in os_unix_defs.h for Unix */
+#ifndef UNIX            /* it's in os/unix_defs.h for Unix */
 # include <time.h>
 #endif
 
@@ -89,8 +91,6 @@ typedef struct pointer_entry PTR_EN;        /* block/line-count pair */
 #define PTR_ID         (('p' << 8) + 't')   /* pointer block id */
 #define BLOCK0_ID0     'b'                  /* block 0 id 0 */
 #define BLOCK0_ID1     '0'                  /* block 0 id 1 */
-#define BLOCK0_ID1_C0  'c'                  /* block 0 id 1 'cm' 0 */
-#define BLOCK0_ID1_C1  'C'                  /* block 0 id 1 'cm' 1 */
 
 /*
  * pointer to a block, used in a pointer block
@@ -174,8 +174,7 @@ struct data_block {
  * variables, because the rest of the swap file is not portable.
  */
 struct block0 {
-  char_u b0_id[2];              /* id for block 0: BLOCK0_ID0 and BLOCK0_ID1,
-                                 * BLOCK0_ID1_C0, BLOCK0_ID1_C1 */
+  char_u b0_id[2];              ///< ID for block 0: BLOCK0_ID0 and BLOCK0_ID1.
   char_u b0_version[10];        /* Vim version string */
   char_u b0_page_size[4];       /* number of bytes per page */
   char_u b0_mtime[4];           /* last modification time of file */
@@ -276,10 +275,11 @@ int ml_open(buf_T *buf)
   /*
    * When 'updatecount' is non-zero swap file may be opened later.
    */
-  if (p_uc && buf->b_p_swf)
+  if (!buf->terminal && p_uc && buf->b_p_swf) {
     buf->b_may_swap = true;
-  else
+  } else {
     buf->b_may_swap = false;
+  }
 
   /*
    * Open the memfile.  No swap file is created yet.
@@ -373,7 +373,7 @@ error:
   if (mfp != NULL) {
     if (hp)
       mf_put(mfp, hp, false, false);
-    mf_close(mfp, true);            /* will also free(mfp->mf_fname) */
+    mf_close(mfp, true);            /* will also xfree(mfp->mf_fname) */
   }
   buf->b_ml.ml_mfp = NULL;
   return FAIL;
@@ -418,7 +418,7 @@ void ml_setname(buf_T *buf)
 
     /* if the file name is the same we don't have to do anything */
     if (fnamecmp(fname, mfp->mf_fname) == 0) {
-      free(fname);
+      xfree(fname);
       success = TRUE;
       break;
     }
@@ -431,14 +431,14 @@ void ml_setname(buf_T *buf)
     /* try to rename the swap file */
     if (vim_rename(mfp->mf_fname, fname) == 0) {
       success = TRUE;
-      free(mfp->mf_fname);
+      xfree(mfp->mf_fname);
       mfp->mf_fname = fname;
-      free(mfp->mf_ffname);
+      xfree(mfp->mf_ffname);
       mf_set_ffname(mfp);
       ml_upd_block0(buf, UB_SAME_DIR);
       break;
     }
-    free(fname);                /* this fname didn't work, try another */
+    xfree(fname);                /* this fname didn't work, try another */
   }
 
   if (mfp->mf_fd == -1) {           /* need to (re)open the swap file */
@@ -486,7 +486,8 @@ void ml_open_file(buf_T *buf)
   char_u      *dirp;
 
   mfp = buf->b_ml.ml_mfp;
-  if (mfp == NULL || mfp->mf_fd >= 0 || !buf->b_p_swf || cmdmod.noswapfile) {
+  if (mfp == NULL || mfp->mf_fd >= 0 || !buf->b_p_swf || cmdmod.noswapfile
+      || buf->terminal) {
     return; /* nothing to do */
   }
 
@@ -566,9 +567,9 @@ void ml_close(buf_T *buf, int del_file)
     return;
   mf_close(buf->b_ml.ml_mfp, del_file);       /* close the .swp file */
   if (buf->b_ml.ml_line_lnum != 0 && (buf->b_ml.ml_flags & ML_LINE_DIRTY))
-    free(buf->b_ml.ml_line_ptr);
-  free(buf->b_ml.ml_stack);
-  free(buf->b_ml.ml_chunksize);
+    xfree(buf->b_ml.ml_line_ptr);
+  xfree(buf->b_ml.ml_stack);
+  xfree(buf->b_ml.ml_chunksize);
   buf->b_ml.ml_chunksize = NULL;
   buf->b_ml.ml_mfp = NULL;
 
@@ -586,8 +587,7 @@ void ml_close(buf_T *buf, int del_file)
 void ml_close_all(int del_file)
 {
   FOR_ALL_BUFFERS(buf) {
-    ml_close(buf, del_file && ((buf->b_flags & BF_PRESERVED) == 0
-                               || vim_strchr(p_cpo, CPO_PRESERVE) == NULL));
+    ml_close(buf, del_file && ((buf->b_flags & BF_PRESERVED) == 0));
   }
   spell_delete_wordlist();      /* delete the internal wordlist */
   vim_deltempdir();             /* delete created temp directory */
@@ -615,18 +615,21 @@ void ml_timestamp(buf_T *buf)
   ml_upd_block0(buf, UB_FNAME);
 }
 
-/*
- * Return FAIL when the ID of "b0p" is wrong.
- */
-static int ml_check_b0_id(ZERO_BL *b0p)
+/// Checks whether the IDs in b0 are valid.
+static bool ml_check_b0_id(ZERO_BL *b0p)
+  FUNC_ATTR_NONNULL_ALL
 {
-  if (b0p->b0_id[0] != BLOCK0_ID0
-      || (b0p->b0_id[1] != BLOCK0_ID1
-          && b0p->b0_id[1] != BLOCK0_ID1_C0
-          && b0p->b0_id[1] != BLOCK0_ID1_C1)
-      )
-    return FAIL;
-  return OK;
+  return b0p->b0_id[0] == BLOCK0_ID0 && b0p->b0_id[1] == BLOCK0_ID1;
+}
+
+/// Checks whether all strings in b0 are valid (i.e. nul-terminated).
+static bool ml_check_b0_strings(ZERO_BL *b0p)
+  FUNC_ATTR_NONNULL_ALL
+{
+  return (memchr(b0p->b0_version, NUL, 10)
+          && memchr(b0p->b0_uname, NUL, B0_UNAME_SIZE)
+          && memchr(b0p->b0_hname, NUL, B0_HNAME_SIZE)
+          && memchr(b0p->b0_fname, NUL, B0_FNAME_SIZE_CRYPT));
 }
 
 /*
@@ -688,7 +691,7 @@ static void set_b0_fname(ZERO_BL *b0p, buf_T *buf)
     }
     FileInfo file_info;
     if (os_fileinfo((char *)buf->b_ffname, &file_info)) {
-      long_to_char((long)file_info.stat.st_mtim.tv_sec, b0p->b0_mtime);
+      long_to_char(file_info.stat.st_mtim.tv_sec, b0p->b0_mtime);
       long_to_char((long)os_fileinfo_inode(&file_info), b0p->b0_ino);
       buf_store_file_info(buf, &file_info);
       buf->b_mtime_read = buf->b_mtime;
@@ -820,7 +823,7 @@ void ml_recover(void)
     (void)recover_names(fname, FALSE, i, &fname_used);
   }
   if (fname_used == NULL)
-    goto theend;                        /* out of memory */
+    goto theend;  // user chose invalid number.
 
   /* When called from main() still need to initialize storage structure */
   if (called_from_main && ml_open(curbuf) == FAIL)
@@ -931,7 +934,7 @@ void ml_recover(void)
     /* need to reallocate the memory used to store the data */
     p = xmalloc(mfp->mf_page_size);
     memmove(p, hp->bh_data, previous_page_size);
-    free(hp->bh_data);
+    xfree(hp->bh_data);
     hp->bh_data = p;
     b0p = hp->bh_data;
   }
@@ -946,13 +949,13 @@ void ml_recover(void)
   }
 
   home_replace(NULL, mfp->mf_fname, NameBuff, MAXPATHL, TRUE);
-  smsg((char_u *)_("Using swap file \"%s\""), NameBuff);
+  smsg(_("Using swap file \"%s\""), NameBuff);
 
   if (buf_spname(curbuf) != NULL)
     STRLCPY(NameBuff, buf_spname(curbuf), MAXPATHL);
   else
     home_replace(NULL, curbuf->b_ffname, NameBuff, MAXPATHL, TRUE);
-  smsg((char_u *)_("Original file \"%s\""), NameBuff);
+  smsg(_("Original file \"%s\""), NameBuff);
   msg_putchar('\n');
 
   /*
@@ -969,7 +972,7 @@ void ml_recover(void)
           || org_file_info.stat.st_mtim.tv_sec != mtime)) {
     EMSG(_("E308: Warning: Original file may have been changed"));
   }
-  out_flush();
+  ui_flush();
 
   /* Get the 'fileformat' and 'fileencoding' from block zero. */
   b0_ff = (b0p->b0_flags & B0_FF_MASK);
@@ -1004,7 +1007,7 @@ void ml_recover(void)
     set_fileformat(b0_ff - 1, OPT_LOCAL);
   if (b0_fenc != NULL) {
     set_option_value((char_u *)"fenc", 0L, b0_fenc, OPT_LOCAL);
-    free(b0_fenc);
+    xfree(b0_fenc);
   }
   unchanged(curbuf, TRUE);
 
@@ -1190,7 +1193,7 @@ void ml_recover(void)
       /* Need to copy one line, fetching the other one may flush it. */
       p = vim_strsave(ml_get(idx));
       i = STRCMP(p, ml_get(idx + lnum));
-      free(p);
+      xfree(p);
       if (i != 0) {
         changed_int();
         ++curbuf->b_changedtick;
@@ -1233,16 +1236,16 @@ void ml_recover(void)
   redraw_curbuf_later(NOT_VALID);
 
 theend:
-  free(fname_used);
+  xfree(fname_used);
   recoverymode = FALSE;
   if (mfp != NULL) {
     if (hp != NULL)
       mf_put(mfp, hp, false, false);
-    mf_close(mfp, false);           /* will also free(mfp->mf_fname) */
+    mf_close(mfp, false);           /* will also xfree(mfp->mf_fname) */
   }
-  if (buf != NULL) {
-    free(buf->b_ml.ml_stack);
-    free(buf);
+  if (buf != NULL) {  //may be NULL if swap file not found.
+    xfree(buf->b_ml.ml_stack);
+    xfree(buf);
   }
   if (serious_error && called_from_main)
     ml_close(curbuf, TRUE);
@@ -1278,7 +1281,6 @@ recover_names (
   int num_files;
   int file_count = 0;
   char_u      **files;
-  int i;
   char_u      *dirp;
   char_u      *dir_name;
   char_u      *fname_res = NULL;
@@ -1320,52 +1322,35 @@ recover_names (
     if (dir_name[0] == '.' && dir_name[1] == NUL) {     /* check current dir */
       if (fname == NULL) {
         names[0] = vim_strsave((char_u *)"*.sw?");
-#if defined(UNIX) || defined(WIN3264)
         /* For Unix names starting with a dot are special.  MS-Windows
          * supports this too, on some file systems. */
         names[1] = vim_strsave((char_u *)".*.sw?");
         names[2] = vim_strsave((char_u *)".sw?");
         num_names = 3;
-#else
-        num_names = 1;
-#endif
       } else
         num_names = recov_file_names(names, fname_res, TRUE);
     } else {                      /* check directory dir_name */
       if (fname == NULL) {
-        names[0] = concat_fnames(dir_name, (char_u *)"*.sw?", TRUE);
-#if defined(UNIX) || defined(WIN3264)
+        names[0] = (char_u *)concat_fnames((char *)dir_name, "*.sw?", TRUE);
         /* For Unix names starting with a dot are special.  MS-Windows
          * supports this too, on some file systems. */
-        names[1] = concat_fnames(dir_name, (char_u *)".*.sw?", TRUE);
-        names[2] = concat_fnames(dir_name, (char_u *)".sw?", TRUE);
+        names[1] = (char_u *)concat_fnames((char *)dir_name, ".*.sw?", TRUE);
+        names[2] = (char_u *)concat_fnames((char *)dir_name, ".sw?", TRUE);
         num_names = 3;
-#else
-        num_names = 1;
-#endif
       } else {
-#if defined(UNIX) || defined(WIN3264)
         p = dir_name + STRLEN(dir_name);
-        if (after_pathsep(dir_name, p) && p[-1] == p[-2]) {
+        if (after_pathsep((char *)dir_name, (char *)p) && p[-1] == p[-2]) {
           /* Ends with '//', Use Full path for swap name */
-          tail = make_percent_swname(dir_name, fname_res);
-        } else
-#endif
-        tail = path_tail(fname_res);
-        tail = concat_fnames(dir_name, tail, TRUE);
+          tail = (char_u *)make_percent_swname((char *)dir_name, (char *)fname_res);
+        } else {
+          tail = path_tail(fname_res);
+          tail = (char_u *)concat_fnames((char *)dir_name, (char *)tail, TRUE);
+        }
         num_names = recov_file_names(names, tail, FALSE);
-        free(tail);
+        xfree(tail);
       }
     }
 
-    /* check for out-of-memory */
-    for (i = 0; i < num_names; ++i) {
-      if (names[i] == NULL) {
-        for (i = 0; i < num_names; ++i)
-          free(names[i]);
-        num_names = 0;
-      }
-    }
     if (num_names == 0)
       num_files = 0;
     else if (expand_wildcards(num_names, names, &num_files, &files,
@@ -1378,15 +1363,15 @@ recover_names (
      * Try finding a swap file by simply adding ".swp" to the file name.
      */
     if (*dirp == NUL && file_count + num_files == 0 && fname != NULL) {
-      char_u *swapname = modname(fname_res, (char_u *)".swp", TRUE);
+      char_u *swapname = (char_u *)modname((char *)fname_res, ".swp", TRUE);
       if (swapname != NULL) {
         if (os_file_exists(swapname)) {
-          files = (char_u **)xmalloc(sizeof(char_u *));
+          files = xmalloc(sizeof(char_u *));
           files[0] = swapname;
           swapname = NULL;
           num_files = 1;
         }
-        free(swapname);
+        xfree(swapname);
       }
     }
 
@@ -1395,14 +1380,14 @@ recover_names (
      */
     if (curbuf->b_ml.ml_mfp != NULL
         && (p = curbuf->b_ml.ml_mfp->mf_fname) != NULL) {
-      for (i = 0; i < num_files; ++i)
+      for (int i = 0; i < num_files; ++i)
         if (path_full_compare(p, files[i], TRUE) & kEqualFiles) {
           /* Remove the name from files[i].  Move further entries
            * down.  When the array becomes empty free it here, since
            * FreeWild() won't be called below. */
-          free(files[i]);
+          xfree(files[i]);
           if (--num_files == 0)
-            free(files);
+            xfree(files);
           else
             for (; i < num_files; ++i)
               files[i] = files[i + 1];
@@ -1428,7 +1413,7 @@ recover_names (
       }
 
       if (num_files) {
-        for (i = 0; i < num_files; ++i) {
+        for (int i = 0; i < num_files; ++i) {
           /* print the swap file name */
           msg_outnum((long)++file_count);
           MSG_PUTS(".    ");
@@ -1438,42 +1423,41 @@ recover_names (
         }
       } else
         MSG_PUTS(_("      -- none --\n"));
-      out_flush();
+      ui_flush();
     } else
       file_count += num_files;
 
-    for (i = 0; i < num_names; ++i)
-      free(names[i]);
+    for (int i = 0; i < num_names; ++i)
+      xfree(names[i]);
     if (num_files > 0)
       FreeWild(num_files, files);
   }
-  free(dir_name);
+  xfree(dir_name);
   return file_count;
 }
 
-#if defined(UNIX) || defined(WIN3264)  /* Need _very_ long file names */
 /*
  * Append the full path to name with path separators made into percent
  * signs, to dir. An unnamed buffer is handled as "" (<currentdir>/"")
  */
-static char_u *make_percent_swname(char_u *dir, char_u *name)
+static char *make_percent_swname(const char *dir, char *name)
+  FUNC_ATTR_NONNULL_ARG(1)
 {
-  char_u *d, *s, *f;
-
-  f = fix_fname(name != NULL ? name : (char_u *) "");
-  d = NULL;
+  char *d = NULL;
+  char *f = fix_fname(name != NULL ? name : "");
   if (f != NULL) {
-    s = (char_u *)xstrdup((char *)f);
-    for (d = s; *d != NUL; mb_ptr_adv(d))
-      if (vim_ispathsep(*d))
+    char *s = xstrdup(f);
+    for (d = s; *d != NUL; mb_ptr_adv(d)) {
+      if (vim_ispathsep(*d)) {
         *d = '%';
+      }
+    }
     d = concat_fnames(dir, s, TRUE);
-    free(s);
-    free(f);
+    xfree(s);
+    xfree(f);
   }
   return d;
 }
-#endif
 
 #ifdef UNIX
 static int process_still_running;
@@ -1523,6 +1507,8 @@ static time_t swapfile_info(char_u *fname)
         MSG_PUTS(_("         [from Vim version 3.0]"));
       } else if (ml_check_b0_id(&b0) == FAIL) {
         MSG_PUTS(_("         [does not look like a Vim swap file]"));
+      } else if (!ml_check_b0_strings(&b0)) {
+        MSG_PUTS(_("         [garbled strings (not nul terminated)]"));
       } else {
         MSG_PUTS(_("         file name: "));
         if (b0.b0_fname[0] == NUL)
@@ -1572,36 +1558,31 @@ static time_t swapfile_info(char_u *fname)
 }
 
 static int recov_file_names(char_u **names, char_u *path, int prepend_dot)
+  FUNC_ATTR_NONNULL_ALL
 {
-  int num_names;
-  char_u      *p;
-  int i;
+  int num_names = 0;
 
-  num_names = 0;
-
-  /*
-   * May also add the file name with a dot prepended, for swap file in same
-   * dir as original file.
-   */
+  // May also add the file name with a dot prepended, for swap file in same
+  // dir as original file.
   if (prepend_dot) {
-    names[num_names] = modname(path, (char_u *)".sw?", TRUE);
+    names[num_names] = (char_u *)modname((char *)path, ".sw?", TRUE);
     if (names[num_names] == NULL)
       return num_names;
     ++num_names;
   }
 
   // Form the normal swap file name pattern by appending ".sw?".
-  names[num_names] = concat_fnames(path, (char_u *)".sw?", FALSE);
+  names[num_names] = (char_u *)concat_fnames((char *)path, ".sw?", FALSE);
   if (num_names >= 1) {     /* check if we have the same name twice */
-    p = names[num_names - 1];
-    i = (int)STRLEN(names[num_names - 1]) - (int)STRLEN(names[num_names]);
+    char_u *p = names[num_names - 1];
+    int i = (int)STRLEN(names[num_names - 1]) - (int)STRLEN(names[num_names]);
     if (i > 0)
       p += i;               /* file name has been expanded to full path */
 
     if (STRCMP(p, names[num_names]) != 0)
       ++num_names;
     else
-      free(names[num_names]);
+      xfree(names[num_names]);
   } else
     ++num_names;
 
@@ -2358,7 +2339,7 @@ int ml_replace(linenr_T lnum, char_u *line, int copy)
   if (curbuf->b_ml.ml_line_lnum != lnum)            /* other line buffered */
     ml_flush_line(curbuf);                          /* flush it */
   else if (curbuf->b_ml.ml_flags & ML_LINE_DIRTY)   /* same line allocated */
-    free(curbuf->b_ml.ml_line_ptr);             /* free it */
+    xfree(curbuf->b_ml.ml_line_ptr);             /* free it */
   curbuf->b_ml.ml_line_ptr = line;
   curbuf->b_ml.ml_line_lnum = lnum;
   curbuf->b_ml.ml_flags = (curbuf->b_ml.ml_flags | ML_LINE_DIRTY) & ~ML_EMPTY;
@@ -2713,7 +2694,7 @@ static void ml_flush_line(buf_T *buf)
         (void)ml_delete_int(buf, lnum, FALSE);
       }
     }
-    free(new_line);
+    xfree(new_line);
 
     entered = FALSE;
   }
@@ -2954,12 +2935,9 @@ static int ml_add_stack(buf_T *buf)
   if (top == buf->b_ml.ml_stack_size) {
     CHECK(top > 0, _("Stack size increases"));     /* more than 5 levels??? */
 
-    infoptr_T *newstack = xmalloc(sizeof(infoptr_T) *
-                                    (buf->b_ml.ml_stack_size + STACK_INCR));
-    memmove(newstack, buf->b_ml.ml_stack, (size_t)top * sizeof(infoptr_T));
-    free(buf->b_ml.ml_stack);
-    buf->b_ml.ml_stack = newstack;
     buf->b_ml.ml_stack_size += STACK_INCR;
+    size_t new_size = sizeof(infoptr_T) * buf->b_ml.ml_stack_size;
+    buf->b_ml.ml_stack = xrealloc(buf->b_ml.ml_stack, new_size);
   }
 
   buf->b_ml.ml_stack_top++;
@@ -3068,7 +3046,7 @@ int resolve_symlink(char_u *fname, char_u *buf)
    * be consistent even when opening a relative symlink from different
    * working directories.
    */
-  return vim_FullName(tmp, buf, MAXPATHL, TRUE);
+  return vim_FullName((char *)tmp, (char *)buf, MAXPATHL, TRUE);
 }
 #endif
 
@@ -3084,17 +3062,15 @@ char_u *makeswapname(char_u *fname, char_u *ffname, buf_T *buf, char_u *dir_name
   char_u fname_buf[MAXPATHL];
 #endif
 
-#if defined(UNIX) || defined(WIN3264)  /* Need _very_ long file names */
   s = dir_name + STRLEN(dir_name);
-  if (after_pathsep(dir_name, s) && s[-1] == s[-2]) { /* Ends with '//', Use Full path */
+  if (after_pathsep((char *)dir_name, (char *)s) && s[-1] == s[-2]) { /* Ends with '//', Use Full path */
     r = NULL;
-    if ((s = make_percent_swname(dir_name, fname)) != NULL) {
-      r = modname(s, (char_u *)".swp", FALSE);
-      free(s);
+    if ((s = (char_u *)make_percent_swname((char *)dir_name, (char *)fname)) != NULL) {
+      r = (char_u *)modname((char *)s, ".swp", FALSE);
+      xfree(s);
     }
     return r;
   }
-#endif
 
 #ifdef HAVE_READLINK
   /* Expand symlink in the file name, so that we put the swap file with the
@@ -3104,13 +3080,13 @@ char_u *makeswapname(char_u *fname, char_u *ffname, buf_T *buf, char_u *dir_name
 #endif
 
   // Prepend a '.' to the swap file name for the current directory.
-  r = modname(fname_res, (char_u *)".swp",
+  r = (char_u *)modname((char *)fname_res, ".swp",
               dir_name[0] == '.' && dir_name[1] == NUL);
   if (r == NULL)            /* out of memory */
     return NULL;
 
   s = get_file_in_dir(r, dir_name);
-  free(r);
+  xfree(r);
   return s;
 }
 
@@ -3143,17 +3119,17 @@ get_file_in_dir (
     retval = vim_strsave(fname);
   else if (dname[0] == '.' && vim_ispathsep(dname[1])) {
     if (tail == fname)              /* no path before file name */
-      retval = concat_fnames(dname + 2, tail, TRUE);
+      retval = (char_u *)concat_fnames((char *)dname + 2, (char *)tail, TRUE);
     else {
       save_char = *tail;
       *tail = NUL;
-      t = concat_fnames(fname, dname + 2, TRUE);
+      t = (char_u *)concat_fnames((char *)fname, (char *)dname + 2, TRUE);
       *tail = save_char;
-      retval = concat_fnames(t, tail, TRUE);
-      free(t);
+      retval = (char_u *)concat_fnames((char *)t, (char *)tail, TRUE);
+      xfree(t);
     }
   } else {
-    retval = concat_fnames(dname, tail, TRUE);
+    retval = (char_u *)concat_fnames((char *)dname, (char *)tail, TRUE);
   }
 
   return retval;
@@ -3279,16 +3255,13 @@ findswapname (
   /*
    * we try different names until we find one that does not exist yet
    */
-  if (dir_name == NULL)             /* out of memory */
-    fname = NULL;
-  else
-    fname = makeswapname(buf_fname, buf->b_ffname, buf, dir_name);
+  fname = makeswapname(buf_fname, buf->b_ffname, buf, dir_name);
 
   for (;; ) {
     if (fname == NULL)          /* must be out of memory */
       break;
     if ((n = (int)STRLEN(fname)) == 0) {        /* safety check */
-      free(fname);
+      xfree(fname);
       fname = NULL;
       break;
     }
@@ -3418,7 +3391,7 @@ findswapname (
             if (process_still_running && choice >= 4)
               choice++;                 /* Skip missing "Delete it" button */
 # endif
-            free(name);
+            xfree(name);
 
             /* pretend screen didn't scroll, need redraw anyway */
             msg_scrolled = 0;
@@ -3471,7 +3444,7 @@ findswapname (
     if (fname[n - 1] == 'a') {          /* ".s?a" */
       if (fname[n - 2] == 'a') {        /* ".saa": tried enough, give up */
         EMSG(_("E326: Too many swap files found"));
-        free(fname);
+        xfree(fname);
         fname = NULL;
         break;
       }
@@ -3481,7 +3454,7 @@ findswapname (
     --fname[n - 1];                     /* ".swo", ".swn", etc. */
   }
 
-  free(dir_name);
+  xfree(dir_name);
   return fname;
 }
 
@@ -3578,8 +3551,8 @@ fnamecmp_ino (
    * One of the inode numbers is unknown, try a forced vim_FullName() and
    * compare the file names.
    */
-  retval_c = vim_FullName(fname_c, buf_c, MAXPATHL, TRUE);
-  retval_s = vim_FullName(fname_s, buf_s, MAXPATHL, TRUE);
+  retval_c = vim_FullName((char *)fname_c, (char *)buf_c, MAXPATHL, TRUE);
+  retval_s = vim_FullName((char *)fname_s, (char *)buf_s, MAXPATHL, TRUE);
   if (retval_c == OK && retval_s == OK)
     return STRCMP(buf_c, buf_s) != 0;
 
@@ -3961,8 +3934,9 @@ long ml_find_line_or_offset(buf_T *buf, linenr_T lnum, long *offp)
       size += lnum - 1;
 
     /* Don't count the last line break if 'bin' and 'noeol'. */
-    if (buf->b_p_bin && !buf->b_p_eol)
+    if (buf->b_p_bin && !buf->b_p_eol && buf->b_ml.ml_line_count == lnum) {
       size -= ffdos + 1;
+    }
   }
 
   return size;

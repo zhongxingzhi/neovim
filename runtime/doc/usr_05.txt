@@ -49,9 +49,9 @@ For MS-DOS and MS-Windows you can use one of these:
 
 The vimrc file can contain all the commands that you type after a colon.  The
 most simple ones are for setting options.  For example, if you want Vim to
-always start with the 'incsearch' option on, add this line your vimrc file: >
+always start with the 'ignorecase' option on, add this line your vimrc file: >
 
-	set incsearch
+	set ignorecase
 
 For this new line to take effect you need to exit Vim and start it again.
 Later you will learn how to do this without exiting Vim.
@@ -62,22 +62,14 @@ to write a Vim script file: |usr_41.txt|.
 ==============================================================================
 *05.2*	The example vimrc file explained		*vimrc_example.vim*
 
-In the first chapter was explained how the example vimrc (included in the
-Vim distribution) file can be used to make Vim startup in not-compatible mode
-(see |not-compatible|).  The file can be found here:
+In the first chapter was explained how the example vimrc file can be used.
+The file can be found here:
 
 	$VIMRUNTIME/vimrc_example.vim ~
 
 In this section we will explain the various commands used in this file.  This
 will give you hints about how to set up your own preferences.  Not everything
 will be explained though.  Use the ":help" command to find out more.
-
->
-	set nocompatible
-
-As mentioned in the first chapter, these manuals explain Vim working in an
-improved way, thus not completely Vi compatible.  Setting the 'compatible'
-option off, thus 'nocompatible' takes care of this.
 
 >
 	set backspace=indent,eol,start
@@ -133,7 +125,7 @@ the "2fw" command is executed and the displayed "2f" is removed.
 >
 	set incsearch
 
-Display the match for a search pattern when halfway typing it.
+Display matches for a search pattern while you type.
 
 >
 	map Q gq
@@ -407,45 +399,29 @@ Further reading:
 |new-filetype|		How to detect a new file type.
 
 ==============================================================================
-*05.5*	Adding a help file		*add-local-help* *matchit-install*
+*05.5*	Adding a help file		                   *add-local-help*
 
 If you are lucky, the plugin you installed also comes with a help file.  We
 will explain how to install the help file, so that you can easily find help
 for your new plugin.
-   Let us use the "matchit.vim" plugin as an example (it is included with
-Vim).  This plugin makes the "%" command jump to matching HTML tags,
-if/else/endif in Vim scripts, etc.  Very useful, although it's not backwards
-compatible (that's why it is not enabled by default).
-   This plugin comes with documentation: "matchit.txt".  Let's first copy the
-plugin to the right directory.  This time we will do it from inside Vim, so
-that we can use $VIMRUNTIME.  (You may skip some of the "mkdir" commands if
-you already have the directory.) >
 
-	:!mkdir ~/.vim
-	:!mkdir ~/.vim/plugin
-	:!cp $VIMRUNTIME/macros/matchit.vim ~/.vim/plugin
+Let us suppose a plugin ("my-plugin"), which comes with a help file in a
+non-standard place (it usually resides in a sub-folder called `doc/`).
 
-The "cp" command is for Unix, on MS-DOS you can use "copy".
-
-Now create a "doc" directory in one of the directories in 'runtimepath'. >
+First, create a "doc" directory in one of the directories in 'runtimepath': >
 
 	:!mkdir ~/.vim/doc
 
-Copy the help file to the "doc" directory. >
+Now, copy the help file to the "doc" directory: >
 
-	:!cp $VIMRUNTIME/macros/matchit.txt ~/.vim/doc
+	:!cp my-plugin/my-plugin-doc.txt ~/.vim/doc
 
-Now comes the trick, which allows you to jump to the subjects in the new help
-file: Generate the local tags file with the |:helptags| command. >
+Here comes the trick, which allows you to jump to the subjects in the new help
+file. Generate the local tags file with the |:helptags| command: >
 
 	:helptags ~/.vim/doc
 
-Now you can use the >
-
-	:help g%
-
-command to find help for "g%" in the help file you just added.  You can see an
-entry for the local help file when you do: >
+You can see an entry for the local help file when you do: >
 
 	:help local-additions
 

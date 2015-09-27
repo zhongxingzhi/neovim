@@ -7,13 +7,22 @@
 #include <stdbool.h>
 
 #include "nvim/vim.h"
-#include "nvim/misc2.h"
 #include "nvim/eval.h"
 #include "nvim/memfile.h"
 #include "nvim/memory.h"
 #include "nvim/message.h"
 #include "nvim/misc1.h"
-#include "nvim/term.h"
+#include "nvim/ui.h"
+
+#ifdef HAVE_JEMALLOC
+// Force je_ prefix on jemalloc functions.
+# define JEMALLOC_NO_DEMANGLE
+# include <jemalloc/jemalloc.h>
+# define malloc(size) je_malloc(size)
+# define calloc(count, size) je_calloc(count, size)
+# define realloc(ptr, size) je_realloc(ptr, size)
+# define free(ptr) je_free(ptr)
+#endif
 
 #ifdef INCLUDE_GENERATED_DECLARATIONS
 # include "memory.c.generated.h"
@@ -86,11 +95,17 @@ void *xmalloc(size_t size)
 {
   void *ret = try_malloc(size);
   if (!ret) {
-    OUT_STR(e_outofmem);
-    out_char('\n');
+    mch_errmsg(e_outofmem);
+    mch_errmsg("\n");
     preserve_exit();
   }
   return ret;
+}
+
+/// free wrapper that returns delegates to the backing memory manager
+void xfree(void *ptr)
+{
+  free(ptr);
 }
 
 /// calloc() wrapper
@@ -109,8 +124,8 @@ void *xcalloc(size_t count, size_t size)
     try_to_free_memory();
     ret = calloc(allocated_count, allocated_size);
     if (!ret) {
-      OUT_STR(e_outofmem);
-      out_char('\n');
+      mch_errmsg(e_outofmem);
+      mch_errmsg("\n");
       preserve_exit();
     }
   }
@@ -131,8 +146,8 @@ void *xrealloc(void *ptr, size_t size)
     try_to_free_memory();
     ret = realloc(ptr, allocated_size);
     if (!ret) {
-      OUT_STR(e_outofmem);
-      out_char('\n');
+      mch_errmsg(e_outofmem);
+      mch_errmsg("\n");
       preserve_exit();
     }
   }
@@ -149,7 +164,7 @@ void *xmallocz(size_t size)
 {
   size_t total_size = size + 1;
   if (total_size < size) {
-    OUT_STR(_("Vim: Data too large to fit into virtual memory space\n"));
+    mch_errmsg(_("Vim: Data too large to fit into virtual memory space\n"));
     preserve_exit();
   }
 
@@ -363,19 +378,7 @@ size_t xstrlcpy(char *restrict dst, const char *restrict src, size_t size)
 char *xstrdup(const char *str)
   FUNC_ATTR_MALLOC FUNC_ATTR_WARN_UNUSED_RESULT FUNC_ATTR_NONNULL_RET
 {
-  char *ret = strdup(str);
-
-  if (!ret) {
-    try_to_free_memory();
-    ret = strdup(str);
-    if (!ret) {
-      OUT_STR(e_outofmem);
-      out_char('\n');
-      preserve_exit();
-    }
-  }
-
-  return ret;
+  return xmemdupz(str, strlen(str));
 }
 
 /// A version of memchr that starts the search at `src + len`.
@@ -434,7 +437,7 @@ void do_outofmem_msg(size_t size)
 
     /* Must come first to avoid coming back here when printing the error
      * message fails, e.g. when setting v:errmsg. */
-    did_outofmem_msg = TRUE;
+    did_outofmem_msg = true;
 
     EMSGU(_("E342: Out of memory!  (allocating %" PRIu64 " bytes)"), size);
   }
@@ -489,14 +492,15 @@ void free_all_mem(void)
     return;
   entered = true;
 
-  block_autocmds();         /* don't want to trigger autocommands here */
+  // Don't want to trigger autocommands from here on.
+  block_autocmds();
 
   /* Close all tabs and windows.  Reset 'equalalways' to avoid redraws. */
-  p_ea = FALSE;
+  p_ea = false;
   if (first_tabpage->tp_next != NULL)
-    do_cmdline_cmd((char_u *)"tabonly!");
+    do_cmdline_cmd("tabonly!");
   if (firstwin != lastwin)
-    do_cmdline_cmd((char_u *)"only!");
+    do_cmdline_cmd("only!");
 
   /* Free all spell info. */
   spell_free_all();
@@ -505,25 +509,24 @@ void free_all_mem(void)
   ex_comclear(NULL);
 
   /* Clear menus. */
-  do_cmdline_cmd((char_u *)"aunmenu *");
-  do_cmdline_cmd((char_u *)"menutranslate clear");
+  do_cmdline_cmd("aunmenu *");
+  do_cmdline_cmd("menutranslate clear");
 
   /* Clear mappings, abbreviations, breakpoints. */
-  do_cmdline_cmd((char_u *)"lmapclear");
-  do_cmdline_cmd((char_u *)"xmapclear");
-  do_cmdline_cmd((char_u *)"mapclear");
-  do_cmdline_cmd((char_u *)"mapclear!");
-  do_cmdline_cmd((char_u *)"abclear");
-  do_cmdline_cmd((char_u *)"breakdel *");
-  do_cmdline_cmd((char_u *)"profdel *");
-  do_cmdline_cmd((char_u *)"set keymap=");
+  do_cmdline_cmd("lmapclear");
+  do_cmdline_cmd("xmapclear");
+  do_cmdline_cmd("mapclear");
+  do_cmdline_cmd("mapclear!");
+  do_cmdline_cmd("abclear");
+  do_cmdline_cmd("breakdel *");
+  do_cmdline_cmd("profdel *");
+  do_cmdline_cmd("set keymap=");
 
   free_titles();
   free_findfile();
 
   /* Obviously named calls. */
   free_all_autocmds();
-  clear_termcodes();
   free_all_options();
   free_all_marks();
   alist_clear(&global_alist);
@@ -542,8 +545,8 @@ void free_all_mem(void)
   clear_sb_text();            /* free any scrollback text */
 
   /* Free some global vars. */
-  free(last_cmdline);
-  free(new_last_cmdline);
+  xfree(last_cmdline);
+  xfree(new_last_cmdline);
   set_keep_msg(NULL, 0);
 
   /* Clear cmdline history. */
@@ -564,10 +567,10 @@ void free_all_mem(void)
 
   /* Free all buffers.  Reset 'autochdir' to avoid accessing things that
    * were freed already. */
-  p_acd = FALSE;
+  p_acd = false;
   for (buf = firstbuf; buf != NULL; ) {
     nextbuf = buf->b_next;
-    close_buffer(NULL, buf, DOBUF_WIPE, FALSE);
+    close_buffer(NULL, buf, DOBUF_WIPE, false);
     if (buf_valid(buf))
       buf = nextbuf;            /* didn't work, try next one */
     else
@@ -590,19 +593,12 @@ void free_all_mem(void)
   free_tabpage(first_tabpage);
   first_tabpage = NULL;
 
-# ifdef UNIX
-  /* Machine-specific free. */
-  mch_free_mem();
-# endif
-
   /* message history */
   for (;; )
     if (delete_first_msg() == FAIL)
       break;
 
   eval_clear();
-
-  free_termoptions();
 
   /* screenlines (can't display anything now!) */
   free_screenlines();

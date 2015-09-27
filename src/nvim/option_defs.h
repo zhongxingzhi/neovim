@@ -79,7 +79,7 @@
 #define FO_REMOVE_COMS  'j'     /* remove comment leaders when joining lines */
 
 #define DFLT_FO_VI      "vt"
-#define DFLT_FO_VIM     "tcq"
+#define DFLT_FO_VIM     "tcqj"
 #define FO_ALL          "tcroq2vlb1mMBn,awj"    /* for do_set() */
 
 /* characters for the p_cpo option: */
@@ -95,11 +95,8 @@
 #define CPO_EMPTYREGION 'E'     /* operating on empty region is an error */
 #define CPO_FNAMER      'f'     /* set file name for ":r file" */
 #define CPO_FNAMEW      'F'     /* set file name for ":w file" */
-#define CPO_GOTO1       'g'     /* goto line 1 for ":edit" */
-#define CPO_INSEND      'H'     /* "I" inserts before last blank in line */
 #define CPO_INTMOD      'i'     /* interrupt a read makes buffer modified */
 #define CPO_INDENT      'I'     /* remove auto-indent more often */
-#define CPO_JOINSP      'j'     /* only use two spaces for join after '.' */
 #define CPO_ENDOFSENT   'J'     /* need two spaces to detect end of sentence */
 #define CPO_KEYCODE     'k'     /* don't recognize raw key code in mappings */
 #define CPO_KOFFSET     'K'     /* don't wait for key code in mappings */
@@ -120,7 +117,6 @@
 #define CPO_TAGPAT      't'
 #define CPO_UNDO        'u'     /* "u" undoes itself */
 #define CPO_BACKSPACE   'v'     /* "v" keep deleted text */
-#define CPO_CW          'w'     /* "cw" only changes one blank */
 #define CPO_FWRITE      'W'     /* "w!" doesn't overwrite readonly files */
 #define CPO_ESC         'x'
 #define CPO_REPLCNT     'X'     /* "R" with a count only deletes chars once */
@@ -129,26 +125,14 @@
 #define CPO_DOLLAR      '$'
 #define CPO_FILTER      '!'
 #define CPO_MATCH       '%'
-#define CPO_STAR        '*'     /* ":*" means ":@" */
 #define CPO_PLUS        '+'     /* ":write file" resets 'modified' */
-#define CPO_MINUS       '-'     /* "9-" fails at and before line 9 */
 #define CPO_SPECI       '<'     /* don't recognize <> in mappings */
 #define CPO_REGAPPEND   '>'     /* insert NL when appending to a register */
-/* POSIX flags */
-#define CPO_HASH        '#'     /* "D", "o" and "O" do not use a count */
-#define CPO_PARA        '{'     /* "{" is also a paragraph boundary */
-#define CPO_TSIZE       '|'     /* $LINES and $COLUMNS overrule term size */
-#define CPO_PRESERVE    '&'     /* keep swap file after :preserve */
-#define CPO_SUBPERCENT  '/'     /* % in :s string uses previous one */
-#define CPO_BACKSL      '\\'    /* \ is not special in [] */
-#define CPO_CHDIR       '.'     /* don't chdir if buffer is modified */
 #define CPO_SCOLON      ';'     /* using "," and ";" will skip over char if
                                  * cursor would not move */
-/* default values for Vim, Vi and POSIX */
+/* default values for Vim and Vi */
 #define CPO_VIM         "aABceFs"
-#define CPO_VI          "aAbBcCdDeEfFgHiIjJkKlLmMnoOpPqrRsStuvwWxXyZ$!%*-+<>;"
-#define CPO_ALL \
-  "aAbBcCdDeEfFgHiIjJkKlLmMnoOpPqrRsStuvwWxXyZ$!%*-+<>#{|&/\\.;"
+#define CPO_VI          "aAbBcCdDeEfFiIJkKlLmMnoOpPqrRsStuvWxXyZ$!%+<>;"
 
 /* characters for p_ww option: */
 #define WW_ALL          "bshl<>[],~"
@@ -206,11 +190,10 @@
 #define GO_ASELPLUS     'P'             /* autoselectPlus */
 #define GO_RIGHT        'r'             /* use right scrollbar */
 #define GO_VRIGHT       'R'             /* right scrollbar with vert split */
-#define GO_TEAROFF      't'             /* add tear-off menu items */
 #define GO_TOOLBAR      'T'             /* add toolbar */
 #define GO_FOOTER       'F'             /* add footer */
 #define GO_VERTICAL     'v'             /* arrange dialog buttons vertically */
-#define GO_ALL          "aAbcefFghilmMprtTv" /* all possible flags for 'go' */
+#define GO_ALL          "aAbcefFghilmMprTv" /* all possible flags for 'go' */
 
 /* flags for 'comments' option */
 #define COM_NEST        'n'             /* comments strings nest */
@@ -283,7 +266,7 @@
  */
 
 EXTERN long p_aleph;            /* 'aleph' */
-EXTERN int p_acd;               /* 'autochdir' */
+EXTERN bool p_acd;              /* 'autochdir' */
 EXTERN char_u   *p_ambw;        /* 'ambiwidth' */
 EXTERN int p_ar;                /* 'autoread' */
 EXTERN int p_aw;                /* 'autowrite' */
@@ -324,6 +307,7 @@ static char *(p_cb_values[]) = {"unnamed", "unnamedplus", NULL};
 #endif
 # define CB_UNNAMED             0x001
 # define CB_UNNAMEDPLUS         0x002
+# define CB_UNNAMEDMASK         (CB_UNNAMED | CB_UNNAMEDPLUS)
 EXTERN long p_cwh;              /* 'cmdwinheight' */
 EXTERN long p_ch;               /* 'cmdheight' */
 EXTERN int p_confirm;           /* 'confirm' */
@@ -357,7 +341,7 @@ static char *(p_dy_values[]) = {"lastline", "uhex", NULL};
 #define DY_UHEX                 0x002
 EXTERN int p_ed;                /* 'edcompatible' */
 EXTERN char_u   *p_ead;         /* 'eadirection' */
-EXTERN int p_ea;                /* 'equalalways' */
+EXTERN bool p_ea;               /* 'equalalways' */
 EXTERN char_u   *p_ep;          /* 'equalprg' */
 EXTERN int p_eb;                /* 'errorbells' */
 EXTERN char_u   *p_ef;          /* 'errorfile' */
@@ -432,6 +416,7 @@ EXTERN int p_js;                /* 'joinspaces' */
 EXTERN char_u   *p_kp;          /* 'keywordprg' */
 EXTERN char_u   *p_km;          /* 'keymodel' */
 EXTERN char_u   *p_langmap;     /* 'langmap'*/
+EXTERN int p_lnr;               /* 'langnoremap'*/
 EXTERN char_u   *p_lm;          /* 'langmenu' */
 EXTERN char_u   *p_lispwords;   /* 'lispwords' */
 EXTERN long p_ls;               /* 'laststatus' */
@@ -556,7 +541,6 @@ EXTERN int p_tr;                /* 'tagrelative' */
 EXTERN char_u   *p_tags;        /* 'tags' */
 EXTERN int p_tgst;              /* 'tagstack' */
 EXTERN int p_tbidi;             /* 'termbidi' */
-EXTERN char_u   *p_tenc;        /* 'termencoding' */
 EXTERN int p_terse;             /* 'terse' */
 EXTERN int p_to;                /* 'tildeop' */
 EXTERN int p_timeout;           /* 'timeout' */
@@ -568,23 +552,6 @@ EXTERN char_u   *p_titlestring; /* 'titlestring' */
 EXTERN char_u   *p_tsr;         /* 'thesaurus' */
 EXTERN int p_ttimeout;          /* 'ttimeout' */
 EXTERN long p_ttm;              /* 'ttimeoutlen' */
-EXTERN int p_tbi;               /* 'ttybuiltin' */
-EXTERN int p_tf;                /* 'ttyfast' */
-EXTERN long p_ttyscroll;        /* 'ttyscroll' */
-#if defined(FEAT_MOUSE) && defined(UNIX)
-EXTERN char_u   *p_ttym;        /* 'ttymouse' */
-EXTERN unsigned ttym_flags;
-# ifdef IN_OPTION_C
-static char *(p_ttym_values[]) =
-{"xterm", "xterm2", "dec", "netterm", "urxvt", "sgr", NULL};
-# endif
-# define TTYM_XTERM             0x01
-# define TTYM_XTERM2            0x02
-# define TTYM_DEC               0x04
-# define TTYM_NETTERM           0x08
-# define TTYM_URXVT             0x20
-# define TTYM_SGR               0x40
-#endif
 EXTERN char_u   *p_udir;        /* 'undodir' */
 EXTERN long p_ul;               /* 'undolevels' */
 EXTERN long p_ur;               /* 'undoreload' */
@@ -616,7 +583,6 @@ EXTERN char_u   *p_wop;         /* 'wildoptions' */
 EXTERN long p_window;           /* 'window' */
 EXTERN char_u   *p_wak;         /* 'winaltkeys' */
 EXTERN char_u   *p_wig;         /* 'wildignore' */
-EXTERN int p_wiv;               /* 'weirdinvert' */
 EXTERN char_u   *p_ww;          /* 'whichwrap' */
 EXTERN long p_wc;               /* 'wildchar' */
 EXTERN long p_wcm;              /* 'wildcharm' */
@@ -632,6 +598,9 @@ EXTERN int p_write;             /* 'write' */
 EXTERN int p_wa;                /* 'writeany' */
 EXTERN int p_wb;                /* 'writebackup' */
 EXTERN long p_wd;               /* 'writedelay' */
+
+EXTERN int p_force_on;          ///< options that cannot be turned off.
+EXTERN int p_force_off;         ///< options that cannot be turned on.
 
 /*
  * "indir" values for buffer-local opions.

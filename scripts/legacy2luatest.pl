@@ -42,21 +42,14 @@ sub read_in_file {
     my $command_lines = $_[1];
     my $test_body_lines = $_[2];
 
-    # Only keep first input line if it is not empty.
-    my $first_input_line = shift @{$input_lines};
-    if ($first_input_line =~ /^$/) {
-      unshift @{$input_lines}, $first_input_line;
-    }
-
-    # If there are input lines left, wrap them with
-    # `insert` command and add before the previous command
-    # block.
+    # If there are input lines, wrap with an `insert`
+    # command and add before the previous command block.
     if (@{$input_lines}) {
       my $last_input_line = pop @{$input_lines};
       unshift @{$command_lines}, '';
-      unshift @{$command_lines}, $last_input_line . ']])';
+      unshift @{$command_lines}, $last_input_line . ']=])';
       unshift @{$command_lines}, @{$input_lines};
-      unshift @{$command_lines}, "insert([[";
+      unshift @{$command_lines}, "insert([=[";
 
       @{$input_lines} = ();
     }
@@ -90,6 +83,10 @@ sub read_in_file {
 
       # If not an empty line, emit as Lua comment.
       if (!/^$/) {
+        # Remove modeline
+        s/vim:.*set f\w+=vim//g;
+        # Remove trailing ":"
+        s/\s*:\s*$//g;
         push @description_lines, '-- ' . $_;
       }
 
@@ -133,8 +130,15 @@ sub read_in_file {
         # If line contains single quotes or backslashes, use double
         # square brackets to wrap string.
         if (/'/ || /\\/) {
-          $startstr = '[[';
-          $endstr = ']]';
+            # If the line contains a closing square bracket,
+            # wrap it with [=[...]=].
+            if (/\]/) {
+              $startstr = '[=[';
+              $endstr = ']=]';
+            } else {
+              $startstr = '[[';
+              $endstr = ']]';
+            }
         }
 
         # Emit 'feed' if not a search ('/') or ex (':') command.
@@ -161,7 +165,10 @@ sub read_in_file {
         return EMIT_COMMAND;
       }
 
-      push @input_lines, '  ' . $_;
+      # Skip initial lines if they are empty.
+      if (@input_lines or !/^$/) {
+        push @input_lines, '  ' . $_;
+      }
       return EMIT_INPUT;
     },
   );
@@ -190,7 +197,7 @@ sub read_ok_file {
   if (-f $ok_file) {
     push @assertions, '';
     push @assertions, "-- Assert buffer contents.";
-    push @assertions, "expect([[";
+    push @assertions, "expect([=[";
 
     open my $ok_file_handle, '<', $ok_file;
 
@@ -202,7 +209,7 @@ sub read_ok_file {
 
     close $ok_file_handle;
 
-    $assertions[-1] .= "]])";
+    $assertions[-1] .= "]=])";
   }
 
   return \@assertions;

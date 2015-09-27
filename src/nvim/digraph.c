@@ -1532,11 +1532,13 @@ static int getexactdigraph(int char1, int char2, int meta_char)
 
     if (convert_setup(&vc, (char_u *)"utf-8", p_enc) == OK) {
       vc.vc_fail = true;
-      to = string_convert(&vc, buf, &i);
+      assert(i >= 0);
+      size_t len = (size_t)i;
+      to = string_convert(&vc, buf, &len);
 
       if (to != NULL) {
         retval = (*mb_ptr2char)(to);
-        free(to);
+        xfree(to);
       }
       (void)convert_setup(&vc, NULL, NULL);
     }
@@ -1607,7 +1609,7 @@ void putdigraph(char_u *str)
     }
     str = skipwhite(str);
 
-    if (!VIM_ISDIGIT(*str)) {
+    if (!ascii_isdigit(*str)) {
       EMSG(_(e_number_exp));
       return;
     }
@@ -1741,7 +1743,7 @@ char_u* keymap_init(void)
     // Stop any active keymap and clear the table.  Also remove
     // b:keymap_name, as no keymap is active now.
     keymap_unload();
-    do_cmdline_cmd((char_u *)"unlet! b:keymap_name");
+    do_cmdline_cmd("unlet! b:keymap_name");
   } else {
     char *buf;
     size_t buflen;
@@ -1761,11 +1763,11 @@ char_u* keymap_init(void)
                    curbuf->b_p_keymap);
 
       if (source_runtime((char_u *)buf, FALSE) == FAIL) {
-        free(buf);
+        xfree(buf);
         return (char_u *)N_("E544: Keymap file not found");
       }
     }
-    free(buf);
+    xfree(buf);
   }
 
   return NULL;
@@ -1822,12 +1824,12 @@ void ex_loadkeymap(exarg_T *eap)
         if (*kp->to == NUL) {
           EMSG(_("E791: Empty keymap entry"));
         }
-        free(kp->from);
-        free(kp->to);
+        xfree(kp->from);
+        xfree(kp->to);
         --curbuf->b_kmap_ga.ga_len;
       }
     }
-    free(line);
+    xfree(line);
   }
 
   // setup ":lnoremap" to map the keys
@@ -1864,8 +1866,8 @@ static void keymap_unload(void)
   for (int i = 0; i < curbuf->b_kmap_ga.ga_len; ++i) {
     vim_snprintf((char *)buf, sizeof(buf), "<buffer> %s", kp[i].from);
     (void)do_map(1, buf, LANGMAP, FALSE);
-    free(kp[i].from);
-    free(kp[i].to);
+    xfree(kp[i].from);
+    xfree(kp[i].to);
   }
 
   p_cpo = save_cpo;

@@ -10,6 +10,7 @@
  * ex_getln.c: Functions for entering and editing an Ex command line.
  */
 
+#include <assert.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <string.h>
@@ -59,11 +60,11 @@
 #include "nvim/strings.h"
 #include "nvim/syntax.h"
 #include "nvim/tag.h"
-#include "nvim/term.h"
 #include "nvim/window.h"
 #include "nvim/ui.h"
+#include "nvim/os/input.h"
 #include "nvim/os/os.h"
-#include "nvim/os/event.h"
+#include "nvim/event/loop.h"
 
 /*
  * Variables shared between getcmdline(), redrawcmdline() and others.
@@ -292,23 +293,20 @@ getcmdline (
     redir_off = TRUE;           /* Don't redirect the typed command.
                                    Repeated, because a ":redir" inside
                                    completion may switch it on. */
-#ifdef USE_ON_FLY_SCROLL
-    dont_scroll = FALSE;        /* allow scrolling here */
-#endif
     quit_more = FALSE;          /* reset after CTRL-D which had a more-prompt */
 
     cursorcmd();                /* set the cursor on the right spot */
 
     /* Get a character.  Ignore K_IGNORE, it should not do anything, such
      * as stop completion. */
-    event_enable_deferred();
+    input_enable_events();
     do {
       c = safe_vgetc();
     } while (c == K_IGNORE);
-    event_disable_deferred();
+    input_disable_events();
 
     if (c == K_EVENT) {
-      event_process();
+      queue_process_events(loop.events);
       continue;
     }
 
@@ -358,7 +356,7 @@ getcmdline (
         && c != K_KPAGEDOWN && c != K_KPAGEUP
         && c != K_LEFT && c != K_RIGHT
         && (xpc.xp_numfiles > 0 || (c != Ctrl_P && c != Ctrl_N))) {
-      free(lookfor);
+      xfree(lookfor);
       lookfor = NULL;
     }
 
@@ -597,7 +595,7 @@ getcmdline (
             realloc_cmdbuff(len + 1);
             ccline.cmdlen = len;
             STRCPY(ccline.cmdbuff, p);
-            free(p);
+            xfree(p);
 
             /* Restore the cursor or use the position set with
              * set_cmdline_pos(). */
@@ -656,8 +654,8 @@ getcmdline (
         if (ccheck_abbr(c + ABBR_OFF))
           goto cmdline_changed;
         if (!cmd_silent) {
-          windgoto(msg_row, 0);
-          out_flush();
+          ui_cursor_goto(msg_row, 0);
+          ui_flush();
         }
         break;
       }
@@ -795,7 +793,7 @@ getcmdline (
         if (has_mbyte) {
           p = mb_prevptr(ccline.cmdbuff, p);
           if (c == Ctrl_W) {
-            while (p > ccline.cmdbuff && vim_isspace(*p))
+            while (p > ccline.cmdbuff && ascii_isspace(*p))
               p = mb_prevptr(ccline.cmdbuff, p);
             i = mb_get_class(p);
             while (p > ccline.cmdbuff && mb_get_class(p) == i)
@@ -804,10 +802,10 @@ getcmdline (
               p += (*mb_ptr2len)(p);
           }
         } else if (c == Ctrl_W)  {
-          while (p > ccline.cmdbuff && vim_isspace(p[-1]))
+          while (p > ccline.cmdbuff && ascii_isspace(p[-1]))
             --p;
           i = vim_iswordc(p[-1]);
-          while (p > ccline.cmdbuff && !vim_isspace(p[-1])
+          while (p > ccline.cmdbuff && !ascii_isspace(p[-1])
                  && vim_iswordc(p[-1]) == i)
             --p;
         } else
@@ -829,7 +827,7 @@ getcmdline (
             )
           goto cmdline_not_changed;
 
-        free(ccline.cmdbuff);               /* no commandline to return */
+        xfree(ccline.cmdbuff);               /* no commandline to return */
         ccline.cmdbuff = NULL;
         if (!cmd_silent) {
           if (cmdmsg_rl)
@@ -905,9 +903,6 @@ getcmdline (
       goto returncmd;                   /* back to cmd mode */
 
     case Ctrl_R:                        /* insert register */
-#ifdef USE_ON_FLY_SCROLL
-      dont_scroll = TRUE;               /* disallow scrolling here */
-#endif
       putcmdline('"', TRUE);
       ++no_mapping;
       i = c = plain_vgetc();            /* CTRL-R <char> */
@@ -1200,7 +1195,7 @@ getcmdline (
         int len;
         int old_firstc;
 
-        free(ccline.cmdbuff);
+        xfree(ccline.cmdbuff);
         xpc.xp_context = EXPAND_NOTHING;
         if (hiscnt == hislen)
           p = lookfor;                  /* back to the old one */
@@ -1271,9 +1266,6 @@ getcmdline (
     case Ctrl_K:
       ignore_drag_release = TRUE;
       putcmdline('?', TRUE);
-#ifdef USE_ON_FLY_SCROLL
-      dont_scroll = TRUE;                   /* disallow scrolling here */
-#endif
       c = get_digraph(TRUE);
       if (c != NUL)
         break;
@@ -1374,8 +1366,8 @@ cmdline_changed:
       if (ccline.cmdlen == 0)
         i = 0;
       else {
-        cursor_off();                   /* so the user knows we're busy */
-        out_flush();
+        ui_busy_start();
+        ui_flush();
         ++emsg_off;            /* So it doesn't beep if bad expr */
         /* Set the time limit to half a second. */
         tm = profile_setlimit(500L);
@@ -1392,6 +1384,7 @@ cmdline_changed:
         } else if (char_avail())
           /* cancelled searching because a char was typed */
           incsearch_postponed = TRUE;
+        ui_busy_stop();
       }
       if (i != 0)
         highlight_match = TRUE;                 /* highlight position */
@@ -1485,13 +1478,13 @@ returncmd:
       add_to_history(histype, ccline.cmdbuff, TRUE,
           histype == HIST_SEARCH ? firstc : NUL);
       if (firstc == ':') {
-        free(new_last_cmdline);
+        xfree(new_last_cmdline);
         new_last_cmdline = vim_strsave(ccline.cmdbuff);
       }
     }
 
     if (gotesc) {           /* abandon command line */
-      free(ccline.cmdbuff);
+      xfree(ccline.cmdbuff);
       ccline.cmdbuff = NULL;
       if (msg_scrolled == 0)
         compute_cmdrow();
@@ -1710,10 +1703,7 @@ getexmodeline (
   int vcol = 0;
   char_u      *p;
   int prev_char;
-
-  /* Switch cursor on now.  This avoids that it happens after the "\n", which
-   * confuses the system function that computes tabstops. */
-  cursor_on();
+  int len;
 
   /* always start in column 0; write a newline if necessary */
   compute_cmdrow();
@@ -1773,10 +1763,16 @@ getexmodeline (
       if (c1 == '\r')
         c1 = '\n';
 
-      if (c1 == BS || c1 == K_BS
-          || c1 == DEL || c1 == K_DEL || c1 == K_KDEL) {
+      if (c1 == BS || c1 == K_BS || c1 == DEL || c1 == K_DEL || c1 == K_KDEL) {
         if (!GA_EMPTY(&line_ga)) {
-          --line_ga.ga_len;
+          if (has_mbyte) {
+            p = (char_u *)line_ga.ga_data;
+            p[line_ga.ga_len] = NUL;
+            len = (*mb_head_off)(p, p + line_ga.ga_len - 1) + 1;
+            line_ga.ga_len -= len;
+          } else {
+            line_ga.ga_len--;
+          }
           goto redraw;
         }
         continue;
@@ -1786,42 +1782,50 @@ getexmodeline (
         msg_col = startcol;
         msg_clr_eos();
         line_ga.ga_len = 0;
-        continue;
+        goto redraw;
       }
 
+      int num_spaces;
       if (c1 == Ctrl_T) {
-        long sw = get_sw_value(curbuf);
+        int sw = get_sw_value(curbuf);
 
         p = (char_u *)line_ga.ga_data;
         p[line_ga.ga_len] = NUL;
         indent = get_indent_str(p, 8, FALSE);
-        indent += sw - indent % sw;
+        num_spaces = sw - indent % sw;
 add_indent:
-        while (get_indent_str(p, 8, FALSE) < indent) {
+        if (num_spaces > 0) {
+          ga_grow(&line_ga, num_spaces + 1);
+          p = (char_u *)line_ga.ga_data;
           char_u *s = skipwhite(p);
 
-          ga_grow(&line_ga, 1);
-          memmove(s + 1, s, line_ga.ga_len - (s - p) + 1);
-          *s = ' ';
-          ++line_ga.ga_len;
+          // Insert spaces after leading whitespaces.
+          memmove(s + num_spaces, s, line_ga.ga_len - (s - p) + 1);
+          memset(s, ' ', num_spaces);
+
+          line_ga.ga_len += num_spaces;
         }
 redraw:
         /* redraw the line */
         msg_col = startcol;
         vcol = 0;
-        for (p = (char_u *)line_ga.ga_data;
-             p < (char_u *)line_ga.ga_data + line_ga.ga_len; ++p) {
+        p = (char_u *)line_ga.ga_data;
+        p[line_ga.ga_len] = NUL;
+        while (p < (char_u *)line_ga.ga_data + line_ga.ga_len) {
           if (*p == TAB) {
             do {
               msg_putchar(' ');
             } while (++vcol % 8);
+            p++;
           } else {
-            msg_outtrans_len(p, 1);
-            vcol += char2cells(*p);
+            len = MB_PTR2LEN(p);
+            msg_outtrans_len(p, len);
+            vcol += ptr2cells(p);
+            p += len;
           }
         }
         msg_clr_eos();
-        windgoto(msg_row, msg_col);
+        ui_cursor_goto(msg_row, msg_col);
         continue;
       }
 
@@ -1836,15 +1840,25 @@ redraw:
         } else {
           p[line_ga.ga_len] = NUL;
           indent = get_indent_str(p, 8, FALSE);
+          if (indent == 0) {
+            continue;
+          }
           --indent;
           indent -= indent % get_sw_value(curbuf);
         }
-        while (get_indent_str(p, 8, FALSE) > indent) {
-          char_u *s = skipwhite(p);
 
-          memmove(s - 1, s, line_ga.ga_len - (s - p) + 1);
-          --line_ga.ga_len;
+        // reduce the line's indentation
+        char_u *from = skipwhite(p);
+        char_u *to = from;
+        int old_indent;
+        while ((old_indent = get_indent_str(p, 8, FALSE)) > indent) {
+          *--to = NUL;
         }
+        memmove(to, from, line_ga.ga_len - (from - p) + 1);
+        line_ga.ga_len -= from - to;
+
+        // Removed to much indentation, fix it before redrawing.
+        num_spaces = indent - old_indent;
         goto add_indent;
       }
 
@@ -1859,9 +1873,15 @@ redraw:
       }
     }
 
-    if (IS_SPECIAL(c1))
+    if (IS_SPECIAL(c1)) {
       c1 = '?';
-    ((char_u *)line_ga.ga_data)[line_ga.ga_len] = c1;
+    }
+    if (has_mbyte) {
+      len = (*mb_char2bytes)(c1, (char_u *)line_ga.ga_data + line_ga.ga_len);
+    } else {
+      len = 1;
+      ((char_u *)line_ga.ga_data)[line_ga.ga_len] = c1;
+    }
     if (c1 == '\n')
       msg_putchar('\n');
     else if (c1 == TAB) {
@@ -1870,14 +1890,13 @@ redraw:
         msg_putchar(' ');
       } while (++vcol % 8);
     } else {
-      msg_outtrans_len(
-          ((char_u *)line_ga.ga_data) + line_ga.ga_len, 1);
+      msg_outtrans_len(((char_u *)line_ga.ga_data) + line_ga.ga_len, len);
       vcol += char2cells(c1);
     }
-    ++line_ga.ga_len;
+    line_ga.ga_len += len;
     escaped = FALSE;
 
-    windgoto(msg_row, msg_col);
+    ui_cursor_goto(msg_row, msg_col);
     pend = (char_u *)(line_ga.ga_data) + line_ga.ga_len;
 
     /* We are done when a NL is entered, but not when it comes after an
@@ -1955,7 +1974,7 @@ static void realloc_cmdbuff(int len)
    * there, thus copy up to the NUL and add a NUL. */
   memmove(ccline.cmdbuff, p, (size_t)ccline.cmdlen);
   ccline.cmdbuff[ccline.cmdlen] = NUL;
-  free(p);
+  xfree(p);
 
   if (ccline.xpc != NULL
       && ccline.xpc->xp_pattern != NULL
@@ -1975,7 +1994,7 @@ static char_u   *arshape_buf = NULL;
 # if defined(EXITFREE)
 void free_cmdline_buf(void)
 {
-  free(arshape_buf);
+  xfree(arshape_buf);
 }
 
 # endif
@@ -2014,7 +2033,7 @@ static void draw_cmdline(int start, int len)
     if (len * 2 + 2 > buflen) {
       /* Re-allocate the buffer.  We keep it around to avoid a lot of
        * alloc()/free() calls. */
-      free(arshape_buf);
+      xfree(arshape_buf);
       buflen = len * 2 + 2;
       arshape_buf = xmalloc(buflen);
     }
@@ -2288,7 +2307,7 @@ char_u *save_cmdline_alloc(void)
 void restore_cmdline_alloc(char_u *p)
 {
   restore_cmdline((struct cmdline_info *)p);
-  free(p);
+  xfree(p);
 }
 
 /*
@@ -2315,7 +2334,7 @@ cmdline_paste (
   /* check for valid regname; also accept special characters for CTRL-R in
    * the command line */
   if (regname != Ctrl_F && regname != Ctrl_P && regname != Ctrl_W
-      && regname != Ctrl_A && !valid_yank_reg(regname, FALSE))
+      && regname != Ctrl_A && !valid_yank_reg(regname, false))
     return FAIL;
 
   /* A register containing CTRL-R can cause an endless loop.  Allow using
@@ -2365,7 +2384,7 @@ cmdline_paste (
 
     cmdline_paste_str(p, literally);
     if (allocated)
-      free(arg);
+      xfree(arg);
     return OK;
   }
 
@@ -2459,7 +2478,7 @@ void redrawcmd(void)
 
   /* when 'incsearch' is set there may be no command line while redrawing */
   if (ccline.cmdbuff == NULL) {
-    windgoto(cmdline_row, 0);
+    ui_cursor_goto(cmdline_row, 0);
     msg_clr_eos();
     return;
   }
@@ -2512,7 +2531,7 @@ static void cursorcmd(void)
       msg_row = Rows - 1;
   }
 
-  windgoto(msg_row, msg_col);
+  ui_cursor_goto(msg_row, msg_col);
 }
 
 void gotocmdline(int clr)
@@ -2524,7 +2543,7 @@ void gotocmdline(int clr)
     msg_col = 0;            /* always start in column 0 */
   if (clr)                  /* clear the bottom line(s) */
     msg_clr_eos();          /* will reset clear_cmdline */
-  windgoto(cmdline_row, 0);
+  ui_cursor_goto(cmdline_row, 0);
 }
 
 /*
@@ -2585,7 +2604,7 @@ nextwild (
   }
 
   MSG_PUTS("...");          /* show that we are busy */
-  out_flush();
+  ui_flush();
 
   i = (int)(xp->xp_pattern - ccline.cmdbuff);
   xp->xp_pattern_len = ccline.cmdpos - i;
@@ -2613,7 +2632,7 @@ nextwild (
       p2 = ExpandOne(xp, p1,
           vim_strnsave(&ccline.cmdbuff[i], xp->xp_pattern_len),
           use_options, type);
-      free(p1);
+      xfree(p1);
       /* longest match: make sure it is not shorter, happens with :help */
       if (p2 != NULL && type == WILD_LONGEST) {
         for (j = 0; j < xp->xp_pattern_len; ++j)
@@ -2621,7 +2640,7 @@ nextwild (
               || ccline.cmdbuff[i + j] == '?')
             break;
         if ((int)STRLEN(p2) < j) {
-          free(p2);
+          xfree(p2);
           p2 = NULL;
         }
       }
@@ -2641,7 +2660,7 @@ nextwild (
     ccline.cmdlen += difflen;
     ccline.cmdpos += difflen;
   }
-  free(p2);
+  xfree(p2);
 
   redrawcmd();
   cursorcmd();
@@ -2752,7 +2771,7 @@ ExpandOne (
   if (xp->xp_numfiles != -1 && mode != WILD_ALL && mode != WILD_LONGEST) {
     FreeWild(xp->xp_numfiles, xp->xp_files);
     xp->xp_numfiles = -1;
-    free(orig_save);
+    xfree(orig_save);
     orig_save = NULL;
   }
   findex = 0;
@@ -2761,7 +2780,7 @@ ExpandOne (
     return NULL;
 
   if (xp->xp_numfiles == -1) {
-    free(orig_save);
+    xfree(orig_save);
     orig_save = orig;
     orig_saved = TRUE;
 
@@ -2869,7 +2888,7 @@ ExpandOne (
 
   /* Free "orig" if it wasn't stored in "orig_save". */
   if (!orig_saved)
-    free(orig);
+    xfree(orig);
 
   return ss;
 }
@@ -2927,11 +2946,11 @@ void ExpandEscape(expand_T *xp, char_u *str, int numfiles, char_u **files, int o
         /* for ":set path=" we need to escape spaces twice */
         if (xp->xp_backslash == XP_BS_THREE) {
           p = vim_strsave_escaped(files[i], (char_u *)" ");
-          free(files[i]);
+          xfree(files[i]);
           files[i] = p;
 #if defined(BACKSLASH_IN_FILENAME)
           p = vim_strsave_escaped(files[i], (char_u *)" ");
-          free(files[i]);
+          xfree(files[i]);
           files[i] = p;
 #endif
         }
@@ -2940,7 +2959,7 @@ void ExpandEscape(expand_T *xp, char_u *str, int numfiles, char_u **files, int o
 #else
         p = vim_strsave_fnameescape(files[i], xp->xp_shell);
 #endif
-        free(files[i]);
+        xfree(files[i]);
         files[i] = p;
 
         /* If 'str' starts with "\~", replace "~" at start of
@@ -2961,7 +2980,7 @@ void ExpandEscape(expand_T *xp, char_u *str, int numfiles, char_u **files, int o
        */
       for (i = 0; i < numfiles; ++i) {
         p = vim_strsave_escaped(files[i], (char_u *)"\\|\"");
-        free(files[i]);
+        xfree(files[i]);
         files[i] = p;
       }
     }
@@ -2995,7 +3014,7 @@ char_u *vim_strsave_fnameescape(char_u *fname, int shell) FUNC_ATTR_NONNULL_RET
     /* For csh and similar shells need to put two backslashes before '!'.
      * One is taken by Vim, one by the shell. */
     char_u *s = vim_strsave_escaped(p, (char_u *)"!");
-    free(p);
+    xfree(p);
     p = s;
   }
 #endif
@@ -3017,7 +3036,7 @@ static void escape_fname(char_u **pp)
   char_u *p = xmalloc(STRLEN(*pp) + 2);
   p[0] = '\\';
   STRCPY(p + 1, *pp);
-  free(*pp);
+  xfree(*pp);
   *pp = p;
 }
 
@@ -3033,10 +3052,8 @@ void tilde_replace(char_u *orig_pat, int num_files, char_u **files)
   if (orig_pat[0] == '~' && vim_ispathsep(orig_pat[1])) {
     for (i = 0; i < num_files; ++i) {
       p = home_replace_save(NULL, files[i]);
-      if (p != NULL) {
-        free(files[i]);
-        files[i] = p;
-      }
+      xfree(files[i]);
+      files[i] = p;
     }
   }
 }
@@ -3078,7 +3095,7 @@ static int showmatches(expand_T *xp, int wildmenu)
     msg_didany = FALSE;                 /* lines_left will be set */
     msg_start();                        /* prepare for paging */
     msg_putchar('\n');
-    out_flush();
+    ui_flush();
     cmdline_row = msg_row;
     msg_didany = FALSE;                 /* lines_left will be set again */
     msg_start();                        /* prepare for paging */
@@ -3153,8 +3170,8 @@ static int showmatches(expand_T *xp, int wildmenu)
             halved_slash = backslash_halve_save(
                 exp_path != NULL ? exp_path : files_found[k]);
             j = os_isdir(halved_slash);
-            free(exp_path);
-            free(halved_slash);
+            xfree(exp_path);
+            xfree(halved_slash);
           } else
             /* Expansion was done here, file names are literal. */
             j = os_isdir(files_found[k]);
@@ -3175,7 +3192,7 @@ static int showmatches(expand_T *xp, int wildmenu)
         msg_clr_eos();
         msg_putchar('\n');
       }
-      out_flush();                          /* show one line at a time */
+      ui_flush();                          /* show one line at a time */
       if (got_int) {
         got_int = FALSE;
         break;
@@ -3265,6 +3282,7 @@ addstar (
     int len,
     int context                    /* EXPAND_FILES etc. */
 )
+  FUNC_ATTR_NONNULL_RET
 {
   char_u      *retval;
   int i, j;
@@ -3343,35 +3361,33 @@ addstar (
     }
   } else {
     retval = xmalloc(len + 4);
-    if (retval != NULL) {
-      STRLCPY(retval, fname, len + 1);
+    STRLCPY(retval, fname, len + 1);
 
-      /*
-       * Don't add a star to *, ~, ~user, $var or `cmd`.
-       * * would become **, which walks the whole tree.
-       * ~ would be at the start of the file name, but not the tail.
-       * $ could be anywhere in the tail.
-       * ` could be anywhere in the file name.
-       * When the name ends in '$' don't add a star, remove the '$'.
-       */
-      tail = path_tail(retval);
-      ends_in_star = (len > 0 && retval[len - 1] == '*');
+    /*
+     * Don't add a star to *, ~, ~user, $var or `cmd`.
+     * * would become **, which walks the whole tree.
+     * ~ would be at the start of the file name, but not the tail.
+     * $ could be anywhere in the tail.
+     * ` could be anywhere in the file name.
+     * When the name ends in '$' don't add a star, remove the '$'.
+     */
+    tail = path_tail(retval);
+    ends_in_star = (len > 0 && retval[len - 1] == '*');
 #ifndef BACKSLASH_IN_FILENAME
-      for (i = len - 2; i >= 0; --i) {
-        if (retval[i] != '\\')
-          break;
-        ends_in_star = !ends_in_star;
-      }
-#endif
-      if ((*retval != '~' || tail != retval)
-          && !ends_in_star
-          && vim_strchr(tail, '$') == NULL
-          && vim_strchr(retval, '`') == NULL)
-        retval[len++] = '*';
-      else if (len > 0 && retval[len - 1] == '$')
-        --len;
-      retval[len] = NUL;
+    for (i = len - 2; i >= 0; --i) {
+      if (retval[i] != '\\')
+        break;
+      ends_in_star = !ends_in_star;
     }
+#endif
+    if ((*retval != '~' || tail != retval)
+        && !ends_in_star
+        && vim_strchr(tail, '$') == NULL
+        && vim_strchr(retval, '`') == NULL)
+      retval[len++] = '*';
+    else if (len > 0 && retval[len - 1] == '$')
+      --len;
+    retval[len] = NUL;
   }
   return retval;
 }
@@ -3506,8 +3522,6 @@ expand_cmdline (
   /* add star to file name, or convert to regexp if not exp. files. */
   xp->xp_pattern_len = (int)(str + col - xp->xp_pattern);
   file_str = addstar(xp->xp_pattern, xp->xp_pattern_len, xp->xp_context);
-  if (file_str == NULL)
-    return EXPAND_UNSUCCESSFUL;
 
   if (p_wic)
     options += WILD_ICASE;
@@ -3517,7 +3531,7 @@ expand_cmdline (
     *matchcount = 0;
     *matches = NULL;
   }
-  free(file_str);
+  xfree(file_str);
 
   return EXPAND_OK;
 }
@@ -3612,7 +3626,7 @@ ExpandFromContext (
     /* Expand wildcards, supporting %:h and the like. */
     ret = expand_wildcards_eval(&pat, num_file, file, flags);
     if (free_pat)
-      free(pat);
+      xfree(pat);
     return ret;
   }
 
@@ -3630,6 +3644,7 @@ ExpandFromContext (
   }
 
   if (xp->xp_context == EXPAND_SHELLCMD) {
+    *file = NULL;
     expand_shellcmd(pat, num_file, file, flags);
     return OK;
   }
@@ -3687,6 +3702,7 @@ ExpandFromContext (
       {EXPAND_BEHAVE, get_behave_arg, TRUE, TRUE},
       {EXPAND_HISTORY, get_history_arg, TRUE, TRUE},
       {EXPAND_USER_COMMANDS, get_user_commands, FALSE, TRUE},
+      {EXPAND_USER_ADDR_TYPE, get_user_cmd_addr_type, FALSE, TRUE},
       {EXPAND_USER_CMD_FLAGS, get_user_cmd_flags, FALSE, TRUE},
       {EXPAND_USER_NARGS, get_user_cmd_nargs, FALSE, TRUE},
       {EXPAND_USER_COMPLETE, get_user_cmd_complete, FALSE, TRUE},
@@ -3702,6 +3718,7 @@ ExpandFromContext (
       {EXPAND_EVENTS, get_event_name, TRUE, TRUE},
       {EXPAND_AUGROUP, get_augroup_name, TRUE, TRUE},
       {EXPAND_CSCOPE, get_cscope_name, TRUE, TRUE},
+      {EXPAND_SIGN, get_sign_name, TRUE, TRUE},
       {EXPAND_PROFILE, get_profile_name, TRUE, TRUE},
 #ifdef HAVE_WORKING_LIBINTL
       {EXPAND_LANGUAGE, get_lang_arg, TRUE, FALSE},
@@ -3810,21 +3827,21 @@ void ExpandGeneric(
   reset_expand_highlight();
 }
 
-/*
- * Complete a shell command.
- */
-static void
-expand_shellcmd (
-    char_u *filepat,           /* pattern to match with command names */
-    int *num_file,          /* return: number of matches */
-    char_u ***file,            /* return: array with matches */
-    int flagsarg                   /* EW_ flags */
-)
+/// Complete a shell command.
+///
+/// @param      filepat  is a pattern to match with command names.
+/// @param[out] num_file is pointer to number of matches.
+/// @param[out] file     is pointer to array of pointers to matches.
+///                      *file will either be set to NULL or point to
+///                      allocated memory.
+/// @param      flagsarg is a combination of EW_* flags.
+static void expand_shellcmd(char_u *filepat, int *num_file, char_u ***file,
+                            int flagsarg)
+    FUNC_ATTR_NONNULL_ALL
 {
   char_u      *pat;
   int i;
   char_u      *path;
-  int mustfree = FALSE;
   garray_T ga;
   char_u *buf = xmalloc(MAXPATHL);
   size_t l;
@@ -3841,6 +3858,7 @@ expand_shellcmd (
 
   flags |= EW_FILE | EW_EXEC;
 
+  bool mustfree = false;  // Track memory allocation for *path.
   /* For an absolute name we don't use $PATH. */
   if (path_is_absolute_path(pat))
     path = (char_u *)" ";
@@ -3848,9 +3866,12 @@ expand_shellcmd (
                               || (pat[1] == '.' && vim_ispathsep(pat[2])))))
     path = (char_u *)".";
   else {
-    path = vim_getenv((char_u *)"PATH", &mustfree);
-    if (path == NULL)
+    path = (char_u *)vim_getenv("PATH");
+    if (path == NULL) {
       path = (char_u *)"";
+    } else {
+      mustfree = true;
+    }
   }
 
   /*
@@ -3870,7 +3891,7 @@ expand_shellcmd (
     if (l > MAXPATHL - 5)
       break;
     STRLCPY(buf, s, l + 1);
-    add_pathsep(buf);
+    add_pathsep((char *)buf);
     l = STRLEN(buf);
     STRLCPY(buf + l, pat, MAXPATHL - l);
 
@@ -3886,9 +3907,9 @@ expand_shellcmd (
             STRMOVE(s, s + l);
             ((char_u **)ga.ga_data)[ga.ga_len++] = s;
           } else
-            free(s);
+            xfree(s);
         }
-        free(*file);
+        xfree(*file);
       }
     }
     if (*e != NUL)
@@ -3897,10 +3918,11 @@ expand_shellcmd (
   *file = ga.ga_data;
   *num_file = ga.ga_len;
 
-  free(buf);
-  free(pat);
-  if (mustfree)
-    free(path);
+  xfree(buf);
+  xfree(pat);
+  if (mustfree) {
+    xfree(path);
+  }
 }
 
 /*
@@ -3945,7 +3967,7 @@ static void * call_user_expand_func(user_expand_func_T user_expand_func,
   if (ccline.cmdbuff != NULL)
     ccline.cmdbuff[ccline.cmdlen] = keep;
 
-  free(args[0]);
+  xfree(args[0]);
   return ret;
 }
 
@@ -3985,7 +4007,7 @@ static int ExpandUserDefined(expand_T *xp, regmatch_T *regmatch, int *num_file, 
     if (*e != NUL)
       ++e;
   }
-  free(retstr);
+  xfree(retstr);
   *file = ga.ga_data;
   *num_file = ga.ga_len;
   return OK;
@@ -4038,7 +4060,7 @@ static int ExpandRTDir(char_u *pat, int *num_file, char_u ***file, char *dirname
     char_u *s = xmalloc(size);
     snprintf((char *)s, size, "%s/%s*.vim", dirnames[i], pat);
     globpath(p_rtp, s, &ga, 0);
-    free(s);
+    xfree(s);
   }
 
   for (int i = 0; i < ga.ga_len; i++) {
@@ -4086,14 +4108,15 @@ void globpath(char_u *path, char_u *file, garray_T *ga, int expand_options)
     // Copy one item of the path to buf[] and concatenate the file name.
     copy_option_part(&path, buf, MAXPATHL, ",");
     if (STRLEN(buf) + STRLEN(file) + 2 < MAXPATHL) {
-      add_pathsep(buf);
+      add_pathsep((char *)buf);
       STRCAT(buf, file);  // NOLINT
 
       char_u **p;
-      int num_p;
-      if (ExpandFromContext(&xpc, buf, &num_p, &p,
-              WILD_SILENT|expand_options) != FAIL && num_p > 0) {
-        ExpandEscape(&xpc, buf, num_p, p, WILD_SILENT|expand_options);
+      int num_p = 0;
+      (void)ExpandFromContext(&xpc, buf, &num_p, &p,
+                              WILD_SILENT | expand_options);
+      if (num_p > 0) {
+        ExpandEscape(&xpc, buf, num_p, p, WILD_SILENT | expand_options);
 
         // Concatenate new results to previous ones.
         ga_grow(ga, num_p);
@@ -4107,7 +4130,7 @@ void globpath(char_u *path, char_u *file, garray_T *ga, int expand_options)
     }
   }
 
-  free(buf);
+  xfree(buf);
 }
 
 
@@ -4170,58 +4193,61 @@ static char_u *get_history_arg(expand_T *xp, int idx)
   return NULL;
 }
 
-/*
- * init_history() - Initialize the command line history.
- * Also used to re-allocate the history when the size changes.
- */
+/// Initialize command line history.
+/// Also used to re-allocate history tables when size changes.
 void init_history(void)
 {
-  /*
-   * If size of history table changed, reallocate it
-   */
-  ssize_t newlen = p_hi;
-  if (newlen != hislen) {
-    histentry_T *temp;
-    ssize_t i;
-    ssize_t j;
+  assert(p_hi >= 0 && p_hi <= INT_MAX);
+  int newlen = (int)p_hi;
+  int oldlen = hislen;
 
-    // adjust the tables
-    for (int type = 0; type < HIST_COUNT; ++type) {
-      if (newlen) {
-        temp = xmalloc(newlen * sizeof(*temp));
-      } else
-        temp = NULL;
-      if (newlen == 0 || temp != NULL) {
-        if (hisidx[type] < 0) {                 /* there are no entries yet */
-          for (i = 0; i < newlen; ++i)
-            clear_hist_entry(&temp[i]);
-        } else if (newlen > hislen)   {         /* array becomes bigger */
-          for (i = 0; i <= hisidx[type]; ++i)
-            temp[i] = history[type][i];
-          j = i;
-          for (; i <= newlen - (hislen - hisidx[type]); ++i)
-            clear_hist_entry(&temp[i]);
-          for (; j < hislen; ++i, ++j)
-            temp[i] = history[type][j];
-        } else {                              /* array becomes smaller or 0 */
-          j = hisidx[type];
-          for (i = newlen - 1;; --i) {
-            if (i >= 0)                         /* copy newest entries */
-              temp[i] = history[type][j];
-            else {                              /* remove older entries */
-              free(history[type][j].hisstr);
-              history[type][j].hisstr = NULL;
-            }
-            if (--j < 0)
-              j = hislen - 1;
-            if (j == hisidx[type])
-              break;
-          }
-          hisidx[type] = newlen - 1;
+  // If history tables size changed, reallocate them.
+  // Tables are circular arrays (current position marked by hisidx[type]).
+  // On copying them to the new arrays, we take the chance to reorder them.
+  if (newlen != oldlen) {
+    for (int type = 0; type < HIST_COUNT; type++) {
+      histentry_T *temp = newlen ? xmalloc(newlen * sizeof(*temp)) : NULL;
+
+      int j = hisidx[type];
+      if (j >= 0) {
+        // old array gets partitioned this way:
+        // [0       , i1     ) --> newest entries to be deleted
+        // [i1      , i1 + l1) --> newest entries to be copied
+        // [i1 + l1 , i2     ) --> oldest entries to be deleted
+        // [i2      , i2 + l2) --> oldest entries to be copied
+        int l1 = MIN(j + 1, newlen);             // how many newest to copy
+        int l2 = MIN(newlen, oldlen) - l1;       // how many oldest to copy
+        int i1 = j + 1 - l1;                     // copy newest from here
+        int i2 = MAX(l1, oldlen - newlen + l1);  // copy oldest from here
+
+        // copy as much entries as they fit to new table, reordering them
+        if (newlen) {
+          // copy oldest entries
+          memcpy(&temp[0], &history[type][i2], (size_t)l2 * sizeof(*temp));
+          // copy newest entries
+          memcpy(&temp[l2], &history[type][i1], (size_t)l1 * sizeof(*temp));
         }
-        free(history[type]);
-        history[type] = temp;
+
+        // delete entries that don't fit in newlen, if any
+        for (int i = 0; i < i1; i++) {
+          xfree(history[type][i].hisstr);
+          history[type][i].hisstr = NULL;
+        }
+        for (int i = i1 + l1; i < i2; i++) {
+          xfree(history[type][i].hisstr);
+          history[type][i].hisstr = NULL;
+        }
       }
+
+      // clear remaining space, if any
+      int l3 = j < 0 ? 0 : MIN(newlen, oldlen);  // number of copied entries
+      if (newlen) {
+        memset(temp + l3, 0, (size_t)(newlen - l3) * sizeof(*temp));
+      }
+
+      hisidx[type] = l3 - 1;
+      xfree(history[type]);
+      history[type] = temp;
     }
     hislen = newlen;
   }
@@ -4346,7 +4372,7 @@ add_to_history (
     if (maptick == last_maptick) {
       /* Current line is from the same mapping, remove it */
       hisptr = &history[HIST_SEARCH][hisidx[HIST_SEARCH]];
-      free(hisptr->hisstr);
+      xfree(hisptr->hisstr);
       clear_hist_entry(hisptr);
       --hisnum[histype];
       if (--hisidx[HIST_SEARCH] < 0)
@@ -4358,7 +4384,7 @@ add_to_history (
     if (++hisidx[histype] == hislen)
       hisidx[histype] = 0;
     hisptr = &history[histype][hisidx[histype]];
-    free(hisptr->hisstr);
+    xfree(hisptr->hisstr);
 
     /* Store the separator after the NUL of the string. */
     len = (int)STRLEN(new_entry);
@@ -4531,7 +4557,7 @@ int clr_history(int histype)
   if (hislen != 0 && histype >= 0 && histype < HIST_COUNT) {
     hisptr = history[histype];
     for (i = hislen; i--; ) {
-      free(hisptr->hisstr);
+      xfree(hisptr->hisstr);
       clear_hist_entry(hisptr);
     }
     hisidx[histype] = -1;       /* mark history as cleared */
@@ -4570,7 +4596,7 @@ int del_history_entry(int histype, char_u *str)
         break;
       if (vim_regexec(&regmatch, hisptr->hisstr, (colnr_T)0)) {
         found = TRUE;
-        free(hisptr->hisstr);
+        xfree(hisptr->hisstr);
         clear_hist_entry(hisptr);
       } else {
         if (i != last) {
@@ -4602,7 +4628,7 @@ int del_history_idx(int histype, int idx)
   if (i < 0)
     return FALSE;
   idx = hisidx[histype];
-  free(history[histype][i].hisstr);
+  xfree(history[histype][i].hisstr);
 
   /* When deleting the last added search string in a mapping, reset
    * last_maptick, so that the last added search string isn't deleted again.
@@ -4622,35 +4648,6 @@ int del_history_idx(int histype, int idx)
   return TRUE;
 }
 
-
-/*
- * Very specific function to remove the value in ":set key=val" from the
- * history.
- */
-void remove_key_from_history(void)
-{
-  char_u      *p;
-  int i;
-
-  i = hisidx[HIST_CMD];
-  if (i < 0)
-    return;
-  p = history[HIST_CMD][i].hisstr;
-  if (p != NULL)
-    for (; *p; ++p)
-      if (STRNCMP(p, "key", 3) == 0 && !isalpha(p[3])) {
-        p = vim_strchr(p + 3, '=');
-        if (p == NULL)
-          break;
-        ++p;
-        for (i = 0; p[i] && !vim_iswhite(p[i]); ++i)
-          if (p[i] == '\\' && p[i + 1])
-            ++i;
-        STRMOVE(p, p + i);
-        --p;
-      }
-}
-
 /*
  * Get indices "num1,num2" that specify a range within a list (not a range of
  * text lines in a buffer!) from a string.  Used for ":history" and ":clist".
@@ -4663,7 +4660,7 @@ int get_list_range(char_u **str, int *num1, int *num2)
   long num;
 
   *str = skipwhite(*str);
-  if (**str == '-' || vim_isdigit(**str)) {  /* parse "from" part of range */
+  if (**str == '-' || ascii_isdigit(**str)) {  /* parse "from" part of range */
     vim_str2nr(*str, NULL, &len, FALSE, FALSE, &num, NULL);
     *str += len;
     *num1 = (int)num;
@@ -4703,7 +4700,7 @@ void ex_history(exarg_T *eap)
     return;
   }
 
-  if (!(VIM_ISDIGIT(*arg) || *arg == '-' || *arg == ',')) {
+  if (!(ascii_isdigit(*arg) || *arg == '-' || *arg == ',')) {
     end = arg;
     while (ASCII_ISALPHA(*end)
            || vim_strchr((char_u *)":=@>/?", *end) != NULL)
@@ -4757,7 +4754,7 @@ void ex_history(exarg_T *eap)
           else
             STRCAT(IObuff, hist[i].hisstr);
           msg_outtrans(IObuff);
-          out_flush();
+          ui_flush();
         }
         if (i == idx)
           break;
@@ -4865,7 +4862,7 @@ int read_viminfo_history(vir_T *virp, int writing)
         viminfo_history[type][viminfo_hisidx[type]++] = p;
       }
     }
-    free(val);
+    xfree(val);
   }
   return viminfo_readline(virp);
 }
@@ -4903,7 +4900,7 @@ void finish_viminfo_history(void)
         idx = hislen - 1;
     }
     for (i = 0; i < viminfo_hisidx[type]; i++) {
-      free(history[type][idx].hisstr);
+      xfree(history[type][idx].hisstr);
       history[type][idx].hisstr = viminfo_history[type][i];
       history[type][idx].viminfo = TRUE;
       if (--idx < 0)
@@ -4915,7 +4912,7 @@ void finish_viminfo_history(void)
       history[type][idx++].hisnum = ++hisnum[type];
       idx %= hislen;
     }
-    free(viminfo_history[type]);
+    xfree(viminfo_history[type]);
     viminfo_history[type] = NULL;
     viminfo_hisidx[type] = 0;
   }
@@ -5002,8 +4999,8 @@ void write_viminfo_history(FILE *fp, int merge)
     }
     for (i = 0; i < viminfo_hisidx[type]; ++i)
       if (viminfo_history[type] != NULL)
-        free(viminfo_history[type][i]);
-    free(viminfo_history[type]);
+        xfree(viminfo_history[type][i]);
+    xfree(viminfo_history[type]);
     viminfo_history[type] = NULL;
     viminfo_hisidx[type] = 0;
   }
@@ -5189,7 +5186,7 @@ static int ex_window(void)
     if (aborting() && cmdwin_result != K_IGNORE)
       cmdwin_result = Ctrl_C;
     /* Set the new command line from the cmdline buffer. */
-    free(ccline.cmdbuff);
+    xfree(ccline.cmdbuff);
     if (cmdwin_result == K_XF1 || cmdwin_result == K_XF2) {   /* :qa[!] typed */
       char *p = (cmdwin_result == K_XF2) ? "qa" : "qa!";
 
@@ -5285,13 +5282,13 @@ char_u *script_get(exarg_T *eap, char_u *cmd)
         NUL, eap->cookie, 0);
 
     if (theline == NULL || STRCMP(end_pattern, theline) == 0) {
-      free(theline);
+      xfree(theline);
       break;
     }
 
     ga_concat(&ga, theline);
     ga_append(&ga, '\n');
-    free(theline);
+    xfree(theline);
   }
   ga_append(&ga, NUL);
 

@@ -9,6 +9,7 @@
 /*
  * misc2.c: Various functions.
  */
+#include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <string.h>
@@ -29,6 +30,7 @@
 #include "nvim/fileio.h"
 #include "nvim/fold.h"
 #include "nvim/getchar.h"
+#include "nvim/macros.h"
 #include "nvim/mark.h"
 #include "nvim/mbyte.h"
 #include "nvim/memfile.h"
@@ -49,7 +51,7 @@
 #include "nvim/strings.h"
 #include "nvim/syntax.h"
 #include "nvim/tag.h"
-#include "nvim/term.h"
+#include "nvim/ui.h"
 #include "nvim/window.h"
 #include "nvim/os/os.h"
 #include "nvim/os/shell.h"
@@ -294,10 +296,9 @@ int call_shell(char_u *cmd, ShellOpts opts, char_u *extra_shell_arg)
 
   if (p_verbose > 3) {
     verbose_enter();
-    smsg((char_u *)_("Calling shell to execute: \"%s\""),
-        cmd == NULL ? p_sh : cmd);
-    out_char('\n');
-    cursor_on();
+    smsg(_("Calling shell to execute: \"%s\""),
+         cmd == NULL ? p_sh : cmd);
+    ui_putc('\n');
     verbose_leave();
   }
 
@@ -328,16 +329,11 @@ int call_shell(char_u *cmd, ShellOpts opts, char_u *extra_shell_arg)
           : STRCMP(p_sxq, "\"(") == 0 ? (char_u *)")\""
           : p_sxq);
       retval = os_call_shell(ncmd, opts, extra_shell_arg);
-      free(ncmd);
+      xfree(ncmd);
 
       if (ecmd != cmd)
-        free(ecmd);
+        xfree(ecmd);
     }
-    /*
-     * Check the window size, in case it changed while executing the
-     * external command.
-     */
-    shell_resized_check();
   }
 
   set_vim_var_nr(VV_SHELL_ERROR, (long)retval);
@@ -386,49 +382,13 @@ int vim_chdir(char_u *new_dir)
   char_u      *dir_name;
   int r;
 
-  dir_name = find_directory_in_path(new_dir, (int)STRLEN(new_dir),
-      FNAME_MESS, curbuf->b_ffname);
+  dir_name = find_directory_in_path(new_dir, STRLEN(new_dir),
+                                    FNAME_MESS, curbuf->b_ffname);
   if (dir_name == NULL)
     return -1;
   r = os_chdir((char *)dir_name);
-  free(dir_name);
+  xfree(dir_name);
   return r;
-}
-
-
-/*
- * Print an error message with one or two "%s" and one or two string arguments.
- * This is not in message.c to avoid a warning for prototypes.
- */
-int emsg3(char_u *s, char_u *a1, char_u *a2)
-{
-  if (emsg_not_now())
-    return TRUE;                /* no error messages at the moment */
-  vim_snprintf((char *)IObuff, IOSIZE, (char *)s, a1, a2);
-  return emsg(IObuff);
-}
-
-/*
- * Print an error message with one "%" PRId64 and one (int64_t) argument.
- * This is not in message.c to avoid a warning for prototypes.
- */
-int emsgn(char_u *s, int64_t n)
-{
-  if (emsg_not_now())
-    return TRUE;                /* no error messages at the moment */
-  vim_snprintf((char *)IObuff, IOSIZE, (char *)s, n);
-  return emsg(IObuff);
-}
-
-/*
- * Print an error message with one "%" PRIu64 and one (uint64_t) argument.
- */
-int emsgu(char_u *s, uint64_t n)
-{
-  if (emsg_not_now())
-    return TRUE;                /* no error messages at the moment */
-  vim_snprintf((char *)IObuff, IOSIZE, (char *)s, n);
-  return emsg(IObuff);
 }
 
 /*
@@ -493,7 +453,7 @@ char *read_string(FILE *fd, size_t cnt)
   for (size_t i = 0; i < cnt; i++) {
     int c = getc(fd);
     if (c == EOF) {
-      free(str);
+      xfree(str);
       return NULL;
     }
     str[i] = (uint8_t)c;
@@ -501,22 +461,33 @@ char *read_string(FILE *fd, size_t cnt)
   return (char *)str;
 }
 
-/// Write a number to file "fd", MSB first, in "len" bytes.
-/// @return OK/FAIL.
-int put_bytes(FILE *fd, uintmax_t number, unsigned int len)
+/// Writes a number to file "fd", most significant bit first, in "len" bytes.
+/// @returns false in case of an error.
+bool put_bytes(FILE *fd, uintmax_t number, size_t len)
 {
-  for (unsigned int i = len - 1; i < len; --i)
-    if (putc((int)(number >> (i * 8)), fd) == EOF)
-      return FAIL;
-  return OK;
+  assert(len > 0);
+  for (size_t i = len - 1; i < len; i--) {
+    if (putc((int)(number >> (i * 8)), fd) == EOF) {
+      return false;
+    }
+  }
+  return true;
 }
 
-/// Write time_t to file "fd" in 8 bytes.
+/// Writes time_t to file "fd" in 8 bytes.
 void put_time(FILE *fd, time_t time_)
+{
+  uint8_t buf[8];
+  time_to_bytes(time_, buf);
+  fwrite(buf, sizeof(uint8_t), ARRAY_SIZE(buf), fd);
+}
+
+/// Writes time_t to "buf[8]".
+void time_to_bytes(time_t time_, uint8_t buf[8])
 {
   // time_t can be up to 8 bytes in size, more than uintmax_t in 32 bits
   // systems, thus we can't use put_bytes() here.
-  for (unsigned int i = 7; i < 8; --i) {
-    putc((int)((uint64_t)time_ >> (i * 8)), fd);
+  for (size_t i = 7, bufi = 0; bufi < 8; i--, bufi++) {
+    buf[bufi] = (uint8_t)((uint64_t)time_ >> (i * 8));
   }
 }

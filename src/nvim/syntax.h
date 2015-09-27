@@ -16,7 +16,6 @@
 #define HL_UNDERLINE   0x08
 #define HL_UNDERCURL   0x10
 #define HL_STANDOUT    0x20
-#define HL_ALL         0x3f
 
 #define HL_CONTAINED   0x01    /* not used on toplevel */
 #define HL_TRANSP      0x02    /* has no highlighting	*/
@@ -37,6 +36,12 @@
 #define HL_TRANS_CONT  0x10000 /* transparent item without contains arg */
 #define HL_CONCEAL     0x20000 /* can be concealed */
 #define HL_CONCEALENDS 0x40000 /* can be concealed */
+
+typedef struct {
+  char *name;
+  RgbValue color;
+} color_name_table_T;
+extern color_name_table_T color_name_table[];
 
 #ifdef INCLUDE_GENERATED_DECLARATIONS
 # include "syntax.h.generated.h"

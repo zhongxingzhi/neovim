@@ -68,14 +68,14 @@
 #include "nvim/spell.h"
 #include "nvim/strings.h"
 #include "nvim/syntax.h"
-#include "nvim/term.h"
+#include "nvim/terminal.h"
+#include "nvim/ui.h"
 #include "nvim/undo.h"
+#include "nvim/version.h"
 #include "nvim/window.h"
 #include "nvim/os/os.h"
 #include "nvim/os/time.h"
 #include "nvim/os/input.h"
-
-#define HAVE_BUFLIST_MATCH
 
 #ifdef INCLUDE_GENERATED_DECLARATIONS
 # include "buffer.c.generated.h"
@@ -212,7 +212,7 @@ open_buffer (
    * So the modelines have priority over auto commands.
    */
   /* When reading stdin, the buffer contents always needs writing, so set
-   * the changed flag.  Unless in readonly mode: "ls | gview -".
+   * the changed flag.  Unless in readonly mode: "ls | nvim -R -".
    * When interrupted and 'cpoptions' contains 'i' set changed flag. */
   if ((got_int && vim_strchr(p_cpo, CPO_INTMOD) != NULL)
       || modified_was_set               /* ":set modified" used in autocmd */
@@ -306,20 +306,28 @@ close_buffer (
   bool del_buf = (action == DOBUF_DEL || action == DOBUF_WIPE);
   bool wipe_buf = (action == DOBUF_WIPE);
 
-  /*
-   * Force unloading or deleting when 'bufhidden' says so.
-   * The caller must take care of NOT deleting/freeing when 'bufhidden' is
-   * "hide" (otherwise we could never free or delete a buffer).
-   */
-  if (buf->b_p_bh[0] == 'd') {          /* 'bufhidden' == "delete" */
-    del_buf = true;
+  // Force unloading or deleting when 'bufhidden' says so, but not for terminal
+  // buffers.
+  // The caller must take care of NOT deleting/freeing when 'bufhidden' is
+  // "hide" (otherwise we could never free or delete a buffer).
+  if (!buf->terminal) {
+    if (buf->b_p_bh[0] == 'd') {         // 'bufhidden' == "delete"
+      del_buf = true;
+      unload_buf = true;
+    } else if (buf->b_p_bh[0] == 'w') {  // 'bufhidden' == "wipe"
+      del_buf = true;
+      unload_buf = true;
+      wipe_buf = true;
+    } else if (buf->b_p_bh[0] == 'u')    // 'bufhidden' == "unload"
+      unload_buf = true;
+  }
+
+  if (buf->terminal && (unload_buf || del_buf || wipe_buf)) {
+    // terminal buffers can only be wiped
     unload_buf = true;
-  } else if (buf->b_p_bh[0] == 'w') { /* 'bufhidden' == "wipe" */
     del_buf = true;
-    unload_buf = true;
     wipe_buf = true;
-  } else if (buf->b_p_bh[0] == 'u')     /* 'bufhidden' == "unload" */
-    unload_buf = true;
+  }
 
   if (win_valid(win)) {
     /* Set b_last_cursor when closing the last window for the buffer.
@@ -382,6 +390,10 @@ close_buffer (
   if (buf->b_nwindows > 0 || !unload_buf)
     return;
 
+  if (buf->terminal) {
+    terminal_close(buf->terminal, NULL);
+  } 
+
   /* Always remove the buffer when there is no file name. */
   if (buf->b_ffname == NULL)
     del_buf = TRUE;
@@ -429,8 +441,8 @@ close_buffer (
    * Remove the buffer from the list.
    */
   if (wipe_buf) {
-    free(buf->b_ffname);
-    free(buf->b_sfname);
+    xfree(buf->b_ffname);
+    xfree(buf->b_sfname);
     if (buf->b_prev == NULL)
       firstbuf = buf->b_next;
     else
@@ -549,7 +561,7 @@ static void free_buffer(buf_T *buf)
     buf->b_next = au_pending_free_buf;
     au_pending_free_buf = buf;
   } else {
-    free(buf);
+    xfree(buf);
   }
 }
 
@@ -573,7 +585,7 @@ free_buffer_stuff (
   buf_delete_signs(buf);                /* delete any signs */
   map_clear_int(buf, MAP_ALL_MODES, TRUE, FALSE);    /* clear local mappings */
   map_clear_int(buf, MAP_ALL_MODES, TRUE, TRUE);     /* clear local abbrevs */
-  free(buf->b_start_fenc);
+  xfree(buf->b_start_fenc);
   buf->b_start_fenc = NULL;
 }
 
@@ -591,7 +603,7 @@ static void clear_wininfo(buf_T *buf)
       clear_winopt(&wip->wi_opt);
       deleteFoldRecurse(&wip->wi_folds);
     }
-    free(wip);
+    xfree(wip);
   }
 }
 
@@ -724,7 +736,7 @@ do_bufdel (
        */
       if (bnr == curbuf->b_fnum)
         do_current = bnr;
-      else if (do_buffer(command, DOBUF_FIRST, FORWARD, (int)bnr,
+      else if (do_buffer(command, DOBUF_FIRST, FORWARD, bnr,
                    forceit) == OK)
         ++deleted;
 
@@ -738,7 +750,7 @@ do_bufdel (
         arg = skipwhite(arg);
         if (*arg == NUL)
           break;
-        if (!VIM_ISDIGIT(*arg)) {
+        if (!ascii_isdigit(*arg)) {
           p = skiptowhite_esc(arg);
           bnr = buflist_findpat(arg, p, command == DOBUF_WIPE,
               FALSE, FALSE);
@@ -766,17 +778,17 @@ do_bufdel (
         if (deleted == 1)
           MSG(_("1 buffer unloaded"));
         else
-          smsg((char_u *)_("%d buffers unloaded"), deleted);
+          smsg(_("%d buffers unloaded"), deleted);
       } else if (command == DOBUF_DEL) {
         if (deleted == 1)
           MSG(_("1 buffer deleted"));
         else
-          smsg((char_u *)_("%d buffers deleted"), deleted);
+          smsg(_("%d buffers deleted"), deleted);
       } else {
         if (deleted == 1)
           MSG(_("1 buffer wiped out"));
         else
-          smsg((char_u *)_("%d buffers wiped out"), deleted);
+          smsg(_("%d buffers wiped out"), deleted);
       }
     }
   }
@@ -924,8 +936,8 @@ do_buffer (
     if (action != DOBUF_WIPE && buf->b_ml.ml_mfp == NULL && !buf->b_p_bl)
       return FAIL;
 
-    if (!forceit && bufIsChanged(buf)) {
-      if ((p_confirm || cmdmod.confirm) && p_write) {
+    if (!forceit && (buf->terminal || bufIsChanged(buf))) {
+      if ((p_confirm || cmdmod.confirm) && p_write && !buf->terminal) {
         dialog_changed(buf, FALSE);
         if (!buf_valid(buf))
           /* Autocommand deleted buffer, oops!  It's not changed
@@ -936,9 +948,14 @@ do_buffer (
         if (bufIsChanged(buf))
           return FAIL;
       } else {
-        EMSGN(_("E89: No write since last change for buffer %" PRId64
-                " (add ! to override)"),
-              buf->b_fnum);
+        if (buf->terminal) {
+          EMSG2(_("E89: %s will be killed(add ! to override)"),
+              (char *)buf->b_fname);
+        } else {
+          EMSGN(_("E89: No write since last change for buffer %" PRId64
+                  " (add ! to override)"),
+                buf->b_fnum);
+        }
         return FAIL;
       }
     }
@@ -1313,7 +1330,7 @@ buflist_new (
   if (ffname != NULL && !(flags & BLN_DUMMY)
       && (buf = buflist_findname_file_id(ffname, &file_id,
                                          file_id_valid)) != NULL) {
-    free(ffname);
+    xfree(ffname);
     if (lnum != 0)
       buflist_setfpos(buf, curwin, lnum, (colnr_T)0, FALSE);
     /* copy the options now, if 'cpo' doesn't have 's' and not done
@@ -1377,9 +1394,9 @@ buflist_new (
   buf->b_wininfo = xcalloc(1, sizeof(wininfo_T));
 
   if (ffname != NULL && (buf->b_ffname == NULL || buf->b_sfname == NULL)) {
-    free(buf->b_ffname);
+    xfree(buf->b_ffname);
     buf->b_ffname = NULL;
-    free(buf->b_sfname);
+    xfree(buf->b_sfname);
     buf->b_sfname = NULL;
     if (buf != curbuf)
       free_buffer(buf);
@@ -1420,7 +1437,7 @@ buflist_new (
     if (top_file_num < 0) {             /* wrap around (may cause duplicates) */
       EMSG(_("W14: Warning: List of file names overflow"));
       if (emsg_silent == 0) {
-        out_flush();
+        ui_flush();
         os_delay(3000L, true);          /* make sure it is noticed */
       }
       top_file_num = 1;
@@ -1644,7 +1661,7 @@ buf_T *buflist_findname_exp(char_u *fname)
   buf_T       *buf = NULL;
 
   /* First make the name into a full path name */
-  ffname = FullName_save(fname,
+  ffname = (char_u *)FullName_save((char *)fname,
 #ifdef UNIX
       TRUE                  /* force expansion, get rid of symbolic links */
 #else
@@ -1653,7 +1670,7 @@ buf_T *buflist_findname_exp(char_u *fname)
       );
   if (ffname != NULL) {
     buf = buflist_findname(ffname);
-    free(ffname);
+    xfree(ffname);
   }
   return buf;
 }
@@ -1702,7 +1719,6 @@ buflist_findpat (
     int curtab_only                /* find buffers in current tab only */
 )
 {
-  regprog_T   *prog;
   int match = -1;
   int find_listed;
   char_u      *pat;
@@ -1746,16 +1762,18 @@ buflist_findpat (
         p = pat;
         if (*p == '^' && !(attempt & 1))                 /* add/remove '^' */
           ++p;
-        prog = vim_regcomp(p, p_magic ? RE_MAGIC : 0);
-        if (prog == NULL) {
-          free(pat);
+
+        regmatch_T regmatch;
+        regmatch.regprog = vim_regcomp(p, p_magic ? RE_MAGIC : 0);
+        if (regmatch.regprog == NULL) {
+          xfree(pat);
           return -1;
         }
 
         FOR_ALL_BUFFERS(buf) {
           if (buf->b_p_bl == find_listed
               && (!diffmode || diff_mode_buf(buf))
-              && buflist_match(prog, buf, false) != NULL) {
+              && buflist_match(&regmatch, buf, false) != NULL) {
             if (curtab_only) {
               /* Ignore the match if the buffer is not open in
                * the current tab. */
@@ -1778,7 +1796,7 @@ buflist_findpat (
           }
         }
 
-        vim_regfree(prog);
+        vim_regfree(regmatch.regprog);
         if (match >= 0)                         /* found one match */
           break;
       }
@@ -1790,7 +1808,7 @@ buflist_findpat (
       find_listed = FALSE;
     }
 
-    free(pat);
+    xfree(pat);
   }
 
   if (match == -2)
@@ -1812,7 +1830,6 @@ int ExpandBufnames(char_u *pat, int *num_file, char_u ***file, int options)
   int round;
   char_u      *p;
   int attempt;
-  regprog_T   *prog;
   char_u      *patc;
 
   *num_file = 0;                    /* return values in case of FAIL */
@@ -1833,10 +1850,12 @@ int ExpandBufnames(char_u *pat, int *num_file, char_u ***file, int options)
   for (attempt = 0; attempt <= 1; ++attempt) {
     if (attempt > 0 && patc == pat)
       break;            /* there was no anchor, no need to try again */
-    prog = vim_regcomp(patc + attempt * 11, RE_MAGIC);
-    if (prog == NULL) {
+
+    regmatch_T regmatch;
+    regmatch.regprog = vim_regcomp(patc + attempt * 11, RE_MAGIC);
+    if (regmatch.regprog == NULL) {
       if (patc != pat)
-        free(patc);
+        xfree(patc);
       return FAIL;
     }
 
@@ -1849,7 +1868,7 @@ int ExpandBufnames(char_u *pat, int *num_file, char_u ***file, int options)
       FOR_ALL_BUFFERS(buf) {
         if (!buf->b_p_bl)               /* skip unlisted buffers */
           continue;
-        p = buflist_match(prog, buf, p_wic);
+        p = buflist_match(&regmatch, buf, p_wic);
         if (p != NULL) {
           if (round == 1)
             ++count;
@@ -1868,33 +1887,29 @@ int ExpandBufnames(char_u *pat, int *num_file, char_u ***file, int options)
         *file = xmalloc(count * sizeof(**file));
       }
     }
-    vim_regfree(prog);
+    vim_regfree(regmatch.regprog);
     if (count)                  /* match(es) found, break here */
       break;
   }
 
   if (patc != pat)
-    free(patc);
+    xfree(patc);
 
   *num_file = count;
   return count == 0 ? FAIL : OK;
 }
 
 
-#ifdef HAVE_BUFLIST_MATCH
 /// Check for a match on the file name for buffer "buf" with regprog "prog".
 ///
 /// @param ignore_case When TRUE, ignore case. Use 'fic' otherwise.
-static char_u *buflist_match(regprog_T *prog, buf_T *buf, bool ignore_case)
+static char_u *buflist_match(regmatch_T *rmp, buf_T *buf, bool ignore_case)
 {
-  char_u      *match;
-
-  /* First try the short file name, then the long file name. */
-  match = fname_match(prog, buf->b_sfname, ignore_case);
+  // First try the short file name, then the long file name.
+  char_u *match = fname_match(rmp, buf->b_sfname, ignore_case);
   if (match == NULL) {
-    match = fname_match(prog, buf->b_ffname, ignore_case);
+    match = fname_match(rmp, buf->b_ffname, ignore_case);
   }
-
   return match;
 }
 
@@ -1902,30 +1917,27 @@ static char_u *buflist_match(regprog_T *prog, buf_T *buf, bool ignore_case)
 ///
 /// @param ignore_case When TRUE, ignore case. Use 'fileignorecase' otherwise.
 /// @return "name" when there is a match, NULL when not.
-static char_u *fname_match(regprog_T *prog, char_u *name, bool ignore_case)
+static char_u *fname_match(regmatch_T *rmp, char_u *name, bool ignore_case)
 {
   char_u      *match = NULL;
   char_u      *p;
-  regmatch_T regmatch;
 
   if (name != NULL) {
-    regmatch.regprog = prog;
     // Ignore case when 'fileignorecase' or the argument is set.
-    regmatch.rm_ic = p_fic || ignore_case;
-    if (vim_regexec(&regmatch, name, (colnr_T)0))
+    rmp->rm_ic = p_fic || ignore_case;
+    if (vim_regexec(rmp, name, (colnr_T)0))
       match = name;
     else {
       /* Replace $(HOME) with '~' and try matching again. */
       p = home_replace_save(NULL, name);
-      if (vim_regexec(&regmatch, p, (colnr_T)0))
+      if (vim_regexec(rmp, p, (colnr_T)0))
         match = name;
-      free(p);
+      xfree(p);
     }
   }
 
   return match;
 }
-#endif
 
 /*
  * find file in buffer list by number
@@ -2144,7 +2156,7 @@ void buflist_list(exarg_T *eap)
         (curwin->w_alt_fnum == buf->b_fnum ? '#' : ' '),
         buf->b_ml.ml_mfp == NULL ? ' ' :
         (buf->b_nwindows == 0 ? 'h' : 'a'),
-        !buf->b_p_ma ? '-' : (buf->b_p_ro ? '=' : ' '),
+        !MODIFIABLE(buf) ? '-' : (buf->b_p_ro ? '=' : ' '),
         (buf->b_flags & BF_READERR) ? 'x'
         : (bufIsChanged(buf) ? '+' : ' '),
         NameBuff);
@@ -2159,7 +2171,7 @@ void buflist_list(exarg_T *eap)
         buf == curbuf ? (int64_t)curwin->w_cursor.lnum
                       : (int64_t)buflist_findlnum(buf));
     msg_outtrans(IObuff);
-    out_flush();            /* output one line at a time */
+    ui_flush();            /* output one line at a time */
     os_breakcheck();
   }
 }
@@ -2204,8 +2216,8 @@ setfname (
 
   if (ffname == NULL || *ffname == NUL) {
     /* Removing the name. */
-    free(buf->b_ffname);
-    free(buf->b_sfname);
+    xfree(buf->b_ffname);
+    xfree(buf->b_sfname);
     buf->b_ffname = NULL;
     buf->b_sfname = NULL;
   } else {
@@ -2226,7 +2238,7 @@ setfname (
       if (obuf->b_ml.ml_mfp != NULL) {          /* it's loaded, fail */
         if (message)
           EMSG(_("E95: Buffer with this name already exists"));
-        free(ffname);
+        xfree(ffname);
         return FAIL;
       }
       /* delete from the list */
@@ -2234,10 +2246,10 @@ setfname (
     }
     sfname = vim_strsave(sfname);
 #ifdef USE_FNAME_CASE
-    fname_case(sfname, 0);            /* set correct case for short file name */
+    path_fix_case(sfname);            /* set correct case for short file name */
 #endif
-    free(buf->b_ffname);
-    free(buf->b_sfname);
+    xfree(buf->b_ffname);
+    xfree(buf->b_sfname);
     buf->b_ffname = ffname;
     buf->b_sfname = sfname;
   }
@@ -2263,8 +2275,8 @@ void buf_set_name(int fnum, char_u *name)
 
   buf = buflist_findnr(fnum);
   if (buf != NULL) {
-    free(buf->b_sfname);
-    free(buf->b_ffname);
+    xfree(buf->b_sfname);
+    xfree(buf->b_ffname);
     buf->b_ffname = vim_strsave(name);
     buf->b_sfname = NULL;
     /* Allocate ffname and expand into full path.  Also resolves .lnk
@@ -2542,7 +2554,7 @@ fileinfo (
       set_keep_msg(p, 0);
   }
 
-  free(buffer);
+  xfree(buffer);
 }
 
 void col_print(char_u *buf, size_t buflen, int col, int vcol)
@@ -2617,12 +2629,12 @@ void maketitle(void)
       else {
         p = transstr(path_tail(curbuf->b_fname));
         STRLCPY(buf, p, SPACE_FOR_FNAME + 1);
-        free(p);
+        xfree(p);
       }
 
       switch (bufIsChanged(curbuf)
               + (curbuf->b_p_ro * 2)
-              + (!curbuf->b_p_ma * 4)) {
+              + (!MODIFIABLE(curbuf) * 4)) {
       case 1: STRCAT(buf, " +"); break;
       case 2: STRCAT(buf, " ="); break;
       case 3: STRCAT(buf, " =+"); break;
@@ -2658,7 +2670,7 @@ void maketitle(void)
         if (off < SPACE_FOR_DIR) {
           p = transstr(buf + off);
           STRLCPY(buf + off, p, SPACE_FOR_DIR - off + 1);
-          free(p);
+          xfree(p);
         } else {
           STRLCPY(buf + off, "...", SPACE_FOR_ARGNR - off + 1);
         }
@@ -2667,7 +2679,7 @@ void maketitle(void)
 
       append_arg_number(curwin, buf, SPACE_FOR_ARGNR, FALSE);
 
-      STRCAT(buf, " - VIM");
+      STRCAT(buf, " - NVIM");
 
       if (maxlen > 0) {
         /* make it shorter by removing a bit in the middle */
@@ -2730,7 +2742,7 @@ static int ti_change(char_u *str, char_u **last)
 {
   if ((str == NULL) != (*last == NULL)
       || (str != NULL && *last != NULL && STRCMP(str, *last) != 0)) {
-    free(*last);
+    xfree(*last);
     if (str == NULL)
       *last = NULL;
     else
@@ -2745,14 +2757,15 @@ static int ti_change(char_u *str, char_u **last)
  */
 void resettitle(void)
 {
-  mch_settitle(lasttitle, lasticon);
+  ui_set_title((char *)lasttitle);
+  ui_set_icon((char *)lasticon);
 }
 
 # if defined(EXITFREE)
 void free_titles(void)
 {
-  free(lasttitle);
-  free(lasticon);
+  xfree(lasttitle);
+  xfree(lasticon);
 }
 
 # endif
@@ -2992,7 +3005,7 @@ build_stl_str_hl (
       s++;
       l = -1;
     }
-    if (VIM_ISDIGIT(*s)) {
+    if (ascii_isdigit(*s)) {
       minwid = getdigits_int(&s);
       if (minwid < 0)           /* overflow */
         minwid = 0;
@@ -3028,7 +3041,7 @@ build_stl_str_hl (
     }
     if (*s == '.') {
       s++;
-      if (VIM_ISDIGIT(*s)) {
+      if (ascii_isdigit(*s)) {
         maxwid = getdigits_int(&s);
         if (maxwid <= 0)                /* overflow */
           maxwid = 50;
@@ -3104,7 +3117,7 @@ build_stl_str_hl (
       if (str != NULL && *str != 0) {
         if (*skipdigits(str) == NUL) {
           num = atoi((char *)str);
-          free(str);
+          xfree(str);
           str = NULL;
           itemisflag = FALSE;
         }
@@ -3248,7 +3261,7 @@ build_stl_str_hl (
       itemisflag = TRUE;
       switch ((opt == STL_MODIFIED_ALT)
               + bufIsChanged(wp->w_buffer) * 2
-              + (!wp->w_buffer->b_p_ma) * 4) {
+              + (!MODIFIABLE(wp->w_buffer)) * 4) {
       case 2: str = (char_u *)"[+]"; break;
       case 3: str = (char_u *)",+"; break;
       case 4: str = (char_u *)"[-]"; break;
@@ -3301,7 +3314,7 @@ build_stl_str_hl (
       if (minwid > 0) {
         for (; l < minwid && p + 1 < out + outlen; l++) {
           /* Don't put a "-" in front of a digit. */
-          if (l + 1 == minwid && fillchar == '-' && VIM_ISDIGIT(*t))
+          if (l + 1 == minwid && fillchar == '-' && ascii_isdigit(*t))
             *p++ = ' ';
           else
             *p++ = fillchar;
@@ -3314,7 +3327,7 @@ build_stl_str_hl (
         /* Change a space by fillchar, unless fillchar is '-' and a
          * digit follows. */
         if (fillable && p[-1] == ' '
-            && (!VIM_ISDIGIT(*t) || fillchar != '-'))
+            && (!ascii_isdigit(*t) || fillchar != '-'))
           p[-1] = fillchar;
       }
       for (; l < minwid && p + 1 < out + outlen; l++)
@@ -3361,7 +3374,7 @@ build_stl_str_hl (
       item[curitem].type = Empty;
 
     if (opt == STL_VIM_EXPR)
-      free(str);
+      xfree(str);
 
     if (num >= 0 || (!itemisflag && str && *str))
       prevchar_isflag = FALSE;              /* Item not NULL, but not a flag */
@@ -3371,7 +3384,7 @@ build_stl_str_hl (
   itemcnt = curitem;
 
   if (usefmt != fmt)
-    free(usefmt);
+    xfree(usefmt);
 
   width = vim_strsize(out);
   if (maxwidth > 0 && width > maxwidth) {
@@ -3498,6 +3511,11 @@ build_stl_str_hl (
  */
 void get_rel_pos(win_T *wp, char_u *buf, int buflen)
 {
+  // Need at least 3 chars for writing.
+  if (buflen < 3) {
+    return;
+  }
+
   long above;          /* number of lines above window */
   long below;          /* number of lines below window */
 
@@ -3556,16 +3574,16 @@ void fname_expand(buf_T *buf, char_u **ffname, char_u **sfname)
     return;
   if (*sfname == NULL)          /* if no short file name given, use ffname */
     *sfname = *ffname;
-  *ffname = fix_fname(*ffname);     /* expand to full path */
+  *ffname = (char_u *)fix_fname((char *)*ffname);     /* expand to full path */
 
-#ifdef FEAT_SHORTCUT
+#ifdef WIN32
   if (!buf->b_p_bin) {
     char_u  *rfname;
 
     /* If the file name is a shortcut file, use the file it links to. */
     rfname = mch_resolve_shortcut(*ffname);
     if (rfname != NULL) {
-      free(*ffname);
+      xfree(*ffname);
       *ffname = rfname;
       *sfname = rfname;
     }
@@ -3607,7 +3625,7 @@ do_arg_all (
   int opened_len;               /* length of opened[] */
   int use_firstwin = FALSE;             /* use first window for arglist */
   int split_ret = OK;
-  int p_ea_save;
+  bool p_ea_save;
   alist_T     *alist;           /* argument list to be used */
   buf_T       *buf;
   tabpage_T   *tpnext;
@@ -3774,7 +3792,7 @@ do_arg_all (
     } else if (split_ret == OK) {
       if (!use_firstwin) {              /* split current window */
         p_ea_save = p_ea;
-        p_ea = TRUE;                    /* use space from all windows */
+        p_ea = true;                    /* use space from all windows */
         split_ret = win_split(0, WSP_ROOM | WSP_BELOW);
         p_ea = p_ea_save;
         if (split_ret == FAIL)
@@ -3824,7 +3842,7 @@ do_arg_all (
     win_enter(new_curwin, false);
 
   --autocmd_no_leave;
-  free(opened);
+  xfree(opened);
 }
 
 /*
@@ -3835,7 +3853,7 @@ void ex_buffer_all(exarg_T *eap)
   buf_T       *buf;
   win_T       *wp, *wpnext;
   int split_ret = OK;
-  int p_ea_save;
+  bool p_ea_save;
   int open_wins = 0;
   int r;
   int count;                    /* Maximum number of windows to open. */
@@ -3922,7 +3940,7 @@ void ex_buffer_all(exarg_T *eap)
     if (wp == NULL && split_ret == OK) {
       /* Split the window and put the buffer in it */
       p_ea_save = p_ea;
-      p_ea = TRUE;                      /* use space from all windows */
+      p_ea = true;                      /* use space from all windows */
       split_ret = win_split(0, WSP_ROOM | WSP_BELOW);
       ++open_wins;
       p_ea = p_ea_save;
@@ -4032,8 +4050,6 @@ void do_modelines(int flags)
   --entered;
 }
 
-#include "nvim/version_defs.h"            /* for version number */
-
 /*
  * chk_modeline() - check a single line for a mode string
  * Return FAIL if an error encountered.
@@ -4057,7 +4073,7 @@ chk_modeline (
 
   prev = -1;
   for (s = ml_get(lnum); *s != NUL; ++s) {
-    if (prev == -1 || vim_isspace(prev)) {
+    if (prev == -1 || ascii_isspace(prev)) {
       if ((prev != -1 && STRNCMP(s, "ex:", (size_t)3) == 0)
           || STRNCMP(s, "vi:", (size_t)3) == 0)
         break;
@@ -4143,7 +4159,7 @@ chk_modeline (
   sourcing_lnum = save_sourcing_lnum;
   sourcing_name = save_sourcing_name;
 
-  free(linecopy);
+  xfree(linecopy);
 
   return retval;
 }
@@ -4190,7 +4206,7 @@ int read_viminfo_bufferlist(vir_T *virp, int writing)
       buflist_setfpos(buf, curwin, lnum, col, FALSE);
     }
   }
-  free(xline);
+  xfree(xline);
 
   return viminfo_readline(virp);
 }
@@ -4231,7 +4247,7 @@ void write_viminfo_bufferlist(FILE *fp)
         buf->b_last_cursor.col);
     viminfo_writestring(fp, line);
   }
-  free(line);
+  xfree(line);
 }
 
 
@@ -4337,10 +4353,8 @@ void buf_addsign(
         if (lnum == sign->lnum && id == sign->id) {
             sign->typenr = typenr;
             return;
-        }
-        else if (id < 0 /* keep signs sorted by lnum */
-                 && lnum < sign->lnum)
-        {
+        } else if ((lnum == sign->lnum && id != sign->id)
+                   || (id < 0 && lnum < sign->lnum)) {  // attempt to keep signs sorted by lnum
             insert_sign(buf, prev, sign, id, lnum, typenr);
             return;
         }
@@ -4410,7 +4424,7 @@ linenr_T buf_delsign(
         if (sign->id == id) {
             *lastp = next;
             lnum = sign->lnum;
-            free(sign);
+            xfree(sign);
             break;
         } else {
             lastp = &sign->next;
@@ -4482,7 +4496,7 @@ void buf_delete_signs(buf_T *buf)
 
     while (buf->b_signlist != NULL) {
         next = buf->b_signlist->next;
-        free(buf->b_signlist);
+        xfree(buf->b_signlist);
         buf->b_signlist = next;
     }
 }
@@ -4605,7 +4619,7 @@ int buf_contents_changed(buf_T *buf)
         }
     }
   }
-  free(ea.cmd);
+  xfree(ea.cmd);
 
   /* restore curwin/curbuf and a few other things */
   aucmd_restbuf(&aco);

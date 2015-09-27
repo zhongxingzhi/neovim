@@ -63,10 +63,14 @@ enum {
     VV_OLDFILES,
     VV_WINDOWID,
     VV_PROGPATH,
-    VV_JOB_DATA,
     VV_COMMAND_OUTPUT,
+    VV_COMPLETED_ITEM,
+    VV_MSGPACK_TYPES,
     VV_LEN, /* number of v: vars */
 };
+
+/// Maximum number of function arguments
+#define MAX_FUNC_ARGS   20
 
 #ifdef INCLUDE_GENERATED_DECLARATIONS
 # include "eval.h.generated.h"

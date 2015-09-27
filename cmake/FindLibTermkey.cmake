@@ -4,11 +4,10 @@
 #  LIBTERMKEY_INCLUDE_DIRS - The libtermkey include directories
 #  LIBTERMKEY_LIBRARIES - The libraries needed to use libtermkey
 
-find_package(PkgConfig)
 if(NOT LIBTERMKEY_USE_BUNDLED)
   find_package(PkgConfig)
   if (PKG_CONFIG_FOUND)
-    pkg_check_modules(PC_LIBTERMKEY QUIET libtermkey)
+    pkg_check_modules(PC_LIBTERMKEY QUIET termkey)
   endif()
 else()
   set(PC_LIBTERMKEY_INCLUDEDIR)

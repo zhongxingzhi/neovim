@@ -54,28 +54,57 @@
 -- having the exact same set of attributes will be substituted by "{K:S}",
 -- where K is a key associated the attribute set via the second argument of
 -- "expect".
+-- If a transformation table is present, unexpected attribute sets in the final
+-- state is considered an error. To make testing simpler, a list of attribute
+-- sets that should be ignored can be passed as a third argument. Alternatively,
+-- this third argument can be "true" to indicate that all unexpected attribute
+-- sets should be ignored.
 --
--- Too illustrate how this works, let's say that in the above example we wanted
+-- To illustrate how this works, let's say that in the above example we wanted
 -- to assert that the "-- INSERT --" string is highlighted with the bold
 -- attribute(which normally is), here's how the call to "expect" should look
 -- like:
 --
+--     NonText = Screen.colors.Blue
 --     screen:expect([[
---       hello screen             \
---       ~                        \
---       ~                        \
---       ~                        \
---       ~                        \
---       ~                        \
---       ~                        \
---       ~                        \
---       ~                        \
---       {b:-- INSERT --}             \
---     ]], {b = {bold = true}})
+--       hello screen             |
+--       ~                        |
+--       ~                        |
+--       ~                        |
+--       ~                        |
+--       ~                        |
+--       ~                        |
+--       ~                        |
+--       ~                        |
+--       {b:-- INSERT --}             |
+--     ]], {b = {bold = true}}, {{bold = true, foreground = NonText}})
 --
 -- In this case "b" is a string associated with the set composed of one
 -- attribute: bold. Note that since the {b:} markup is not a real part of the
--- screen, the delimiter(|) had to be moved right
+-- screen, the delimiter(|) had to be moved right. Also, the highlighting of the
+-- NonText markers (~) is ignored in this test.
+--
+-- Multiple expect:s will likely share a group of attribute sets to test.
+-- Therefore these could be specified at the beginning of a test like this:
+--    NonText = Screen.colors.Blue
+--    screen:set_default_attr_ids( {
+--      [1] = {reverse = true, bold = true},
+--      [2] = {reverse = true}
+--    })
+--    screen:set_default_attr_ignore( {{}, {bold=true, foreground=NonText}} )
+-- These can be overridden for a specific expect expression, by passing
+-- different sets as parameters.
+--
+-- To help writing screen tests, there is a utility function
+-- "screen:snapshot_util()", that can be placed in a test file at any point an
+-- "expect(...)" should be. It will wait a short amount of time and then dump
+-- the current state of the screen, in the form of an "expect(..)" expression
+-- that would match it exactly. "snapshot_util" optionally also take the
+-- transformation and ignore set as parameters, like expect, or uses the default
+-- set. It will generate a larger attribute transformation set, if needed.
+-- To generate a text-only test without highlight checks,
+-- use `screen:snapshot_util({},true)`
+
 local helpers = require('test.functional.helpers')
 local request, run, stop = helpers.request, helpers.run, helpers.stop
 local eq, dedent = helpers.eq, helpers.dedent
@@ -85,10 +114,38 @@ Screen.__index = Screen
 
 local debug_screen
 
+local default_screen_timeout = 3500
+if os.getenv('VALGRIND') then
+  default_screen_timeout = default_screen_timeout * 3
+end
+
+if os.getenv('CI_TARGET') then
+  default_screen_timeout = default_screen_timeout * 3
+end
+
+do
+  local spawn, nvim_prog = helpers.spawn, helpers.nvim_prog
+  local session = spawn({nvim_prog, '-u', 'NONE', '-N', '--embed'})
+  local status, rv = session:request('vim_get_color_map')
+  if not status then
+    print('failed to get color map')
+    os.exit(1)
+  end
+  local colors = rv
+  local colornames = {}
+  for name, rgb in pairs(colors) do
+    -- we disregard the case that colornames might not be unique, as
+    -- this is just a helper to get any canonical name of a color
+    colornames[rgb] = name
+  end
+  session:exit(0)
+  Screen.colors = colors
+  Screen.colornames = colornames
+end
 
 function Screen.debug(command)
   if not command then
-    command = 'pynvim -n -g -c '
+    command = 'pynvim -n -c '
   end
   command = command .. request('vim_eval', '$NVIM_LISTEN_ADDRESS')
   if debug_screen then
@@ -109,15 +166,18 @@ function Screen.new(width, height)
     title = '',
     icon = '',
     bell = false,
+    update_menu = false,
     visual_bell = false,
     suspended = false,
     _default_attr_ids = nil,
+    _default_attr_ignore = nil,
     _mode = 'normal',
     _mouse_enabled = true,
     _attrs = {},
     _cursor = {
-      enabled = true, row = 1, col = 1
-    }
+      row = 1, col = 1
+    },
+    _busy = false
   }, Screen)
   self:_handle_resize(width, height)
   return self
@@ -127,8 +187,15 @@ function Screen:set_default_attr_ids(attr_ids)
   self._default_attr_ids = attr_ids
 end
 
-function Screen:attach()
-  request('ui_attach', self._width, self._height, true)
+function Screen:set_default_attr_ignore(attr_ignore)
+  self._default_attr_ignore = attr_ignore
+end
+
+function Screen:attach(rgb)
+  if rgb == nil then
+    rgb = true
+  end
+  request('ui_attach', self._width, self._height, rgb)
 end
 
 function Screen:detach()
@@ -139,7 +206,7 @@ function Screen:try_resize(columns, rows)
   request('ui_try_resize', columns, rows)
 end
 
-function Screen:expect(expected, attr_ids)
+function Screen:expect(expected, attr_ids, attr_ignore)
   -- remove the last line and dedent
   expected = dedent(expected:gsub('\n[ ]+$', ''))
   local expected_rows = {}
@@ -149,12 +216,13 @@ function Screen:expect(expected, attr_ids)
     table.insert(expected_rows, row)
   end
   local ids = attr_ids or self._default_attr_ids
+  local ignore = attr_ignore or self._default_attr_ignore
   self:wait(function()
     for i = 1, self._height do
       local expected_row = expected_rows[i]
-      local actual_row = self:_row_repr(self._rows[i], ids)
+      local actual_row = self:_row_repr(self._rows[i], ids, ignore)
       if expected_row ~= actual_row then
-        return 'Row '..tostring(i)..' didnt match.\nExpected: "'..
+        return 'Row '..tostring(i)..' didn\'t match.\nExpected: "'..
                expected_row..'"\nActual:   "'..actual_row..'"'
       end
     end
@@ -163,22 +231,50 @@ end
 
 function Screen:wait(check, timeout)
   local err, checked = false
+  local success_seen = false
+  local failure_after_success = false
   local function notification_cb(method, args)
     assert(method == 'redraw')
     self:_redraw(args)
     err = check()
     checked = true
     if not err then
+      success_seen = true
       stop()
+    elseif success_seen and #args > 0 then
+      failure_after_success = true
+      --print(require('inspect')(args))
     end
+
     return true
   end
-  run(nil, notification_cb, nil, timeout or 5000)
+  run(nil, notification_cb, nil, timeout or default_screen_timeout)
   if not checked then
     err = check()
   end
+
+  if failure_after_success then
+    print([[
+Warning: Screen changes have been received after the expected state was seen.
+This is probably due to an indeterminism in the test. Try adding
+`wait()` (or even a separate `screen:expect(...)`) at a point of possible
+indeterminism, typically in between a `feed()` or `execute()` which is non-
+synchronous, and a synchronous api call.
+
+Note that sometimes a `wait` can trigger redraws and consequently generate more
+indeterminism. If adding `wait` calls seems to increase the frequency of these
+messages, try removing every `wait` call in the test.
+
+If everything else fails, use Screen:redraw_debug to help investigate what is
+  causing the problem.
+      ]])
+    local tb = debug.traceback()
+    local index = string.find(tb, '\n%s*%[C]')
+    print(string.sub(tb,1,index))
+  end
+
   if err then
-    error(err)
+    assert(false, err)
   end
 end
 
@@ -204,6 +300,8 @@ function Screen:_handle_resize(width, height)
     end
     table.insert(rows, cols)
   end
+  self._cursor.row = 1
+  self._cursor.col = 1
   self._rows = rows
   self._width = width
   self._height = height
@@ -219,7 +317,7 @@ end
 
 function Screen:_handle_eol_clear()
   local row, col = self._cursor.row, self._cursor.col
-  self:_clear_block(row, 1, col, self._scroll_region.right - col)
+  self:_clear_block(row, row, col, self._scroll_region.right)
 end
 
 function Screen:_handle_cursor_goto(row, col)
@@ -227,12 +325,12 @@ function Screen:_handle_cursor_goto(row, col)
   self._cursor.col = col + 1
 end
 
-function Screen:_handle_cursor_on()
-  self._cursor.enabled = true
+function Screen:_handle_busy_start()
+  self._busy = true
 end
 
-function Screen:_handle_cursor_off()
-  self._cursor.enabled = false
+function Screen:_handle_busy_stop()
+  self._busy = false
 end
 
 function Screen:_handle_mouse_on()
@@ -243,12 +341,9 @@ function Screen:_handle_mouse_off()
   self._mouse_enabled = false
 end
 
-function Screen:_handle_insert_mode()
-  self._mode = 'insert'
-end
-
-function Screen:_handle_normal_mode()
-  self._mode = 'normal'
+function Screen:_handle_mode_change(mode)
+  assert(mode == 'insert' or mode == 'replace' or mode == 'normal')
+  self._mode = mode
 end
 
 function Screen:_handle_set_scroll_region(top, bot, left, right)
@@ -322,6 +417,10 @@ function Screen:_handle_suspend()
   self.suspended = true
 end
 
+function Screen:_handle_update_menu()
+  self.update_menu = true
+end
+
 function Screen:_handle_set_title(title)
   self.title = title
 end
@@ -330,9 +429,9 @@ function Screen:_handle_set_icon(icon)
   self.icon = icon
 end
 
-function Screen:_clear_block(top, lines, left, columns)
-  for i = top, top + lines - 1 do
-    self:_clear_row_section(i, left, left + columns - 1)
+function Screen:_clear_block(top, bot, left, right)
+  for i = top, bot do
+    self:_clear_row_section(i, left, right)
   end
 end
 
@@ -344,11 +443,11 @@ function Screen:_clear_row_section(rownum, startcol, stopcol)
   end
 end
 
-function Screen:_row_repr(row, attr_ids)
+function Screen:_row_repr(row, attr_ids, attr_ignore)
   local rv = {}
   local current_attr_id
   for i = 1, self._width do
-    local attr_id = get_attr_id(attr_ids, row[i].attrs)
+    local attr_id = get_attr_id(attr_ids, attr_ignore, row[i].attrs)
     if current_attr_id and attr_id ~= current_attr_id then
       -- close current attribute bracket, add it before any whitespace
       -- up to the current cell
@@ -361,11 +460,10 @@ function Screen:_row_repr(row, attr_ids)
       table.insert(rv, '{' .. attr_id .. ':')
       current_attr_id = attr_id
     end
-    if self._rows[self._cursor.row] == row and self._cursor.col == i then
+    if not self._busy and self._rows[self._cursor.row] == row and self._cursor.col == i then
       table.insert(rv, '^')
-    else
-      table.insert(rv, row[i].text)
     end
+    table.insert(rv, row[i].text)
   end
   if current_attr_id then
     table.insert(rv, '}')
@@ -385,6 +483,94 @@ function Screen:_current_screen()
   return table.concat(rv, '\n')
 end
 
+function Screen:snapshot_util(attrs, ignore)
+  -- util to generate screen test
+  pcall(function() self:wait(function() return "error" end, 250) end)
+  self:print_snapshot(attrs, ignore)
+end
+
+function Screen:redraw_debug(attrs, ignore, timeout)
+  self:print_snapshot(attrs, ignore)
+  local function notification_cb(method, args)
+    assert(method == 'redraw')
+    for _, update in ipairs(args) do
+      print(require('inspect')(update))
+    end
+    self:_redraw(args)
+    self:print_snapshot(attrs, ignore)
+    return true
+  end
+  if timeout == nil then
+    timeout = 250
+  end
+  run(nil, notification_cb, nil, timeout)
+end
+
+function Screen:print_snapshot(attrs, ignore)
+  if ignore == nil then
+    ignore = self._default_attr_ignore
+  end
+  if attrs == nil then
+    attrs = {}
+    if self._default_attr_ids ~= nil then
+      for i, a in ipairs(self._default_attr_ids) do
+        attrs[i] = a
+      end
+    end
+
+    if ignore ~= true then
+      for i = 1, self._height do
+        local row = self._rows[i]
+        for j = 1, self._width do
+          local attr = row[j].attrs
+          if attr_index(attrs, attr) == nil and attr_index(ignore, attr) == nil then
+            if not equal_attrs(attr, {}) then
+              table.insert(attrs, attr)
+            end
+          end
+        end
+      end
+    end
+  end
+
+  local rv = {}
+  for i = 1, self._height do
+    table.insert(rv, "  "..self:_row_repr(self._rows[i],attrs, ignore).."|")
+  end
+  local attrstrs = {}
+  local alldefault = true
+  for i, a in ipairs(attrs) do
+    if self._default_attr_ids == nil or self._default_attr_ids[i] ~= a then
+      alldefault = false
+    end
+    local dict = "{"..pprint_attrs(a).."}"
+    table.insert(attrstrs, "["..tostring(i).."] = "..dict)
+  end
+  local attrstr = "{"..table.concat(attrstrs, ", ").."}"
+  print( "\nscreen:expect([[")
+  print( table.concat(rv, '\n'))
+  if alldefault then
+    print( "]])\n")
+  else
+    print( "]], "..attrstr..")\n")
+  end
+  io.stdout:flush()
+end
+
+function pprint_attrs(attrs)
+    local items = {}
+    for f, v in pairs(attrs) do
+      local desc = tostring(v)
+      if f == "foreground" or f == "background" then
+        if Screen.colornames[v] ~= nil then
+          desc = "Screen.colors."..Screen.colornames[v]
+        end
+      end
+      table.insert(items, f.." = "..desc)
+    end
+    return table.concat(items, ", ")
+end
+
 function backward_find_meaningful(tbl, from)
   for i = from or #tbl, 1, -1 do
     if tbl[i] ~= ' ' then
@@ -394,18 +580,39 @@ function backward_find_meaningful(tbl, from)
   return from
 end
 
-function get_attr_id(attr_ids, attrs)
+function get_attr_id(attr_ids, ignore, attrs)
   if not attr_ids then
     return
   end
   for id, a in pairs(attr_ids) do
-    if a.bold == attrs.bold and a.standout == attrs.standout and
-       a.underline == attrs.underline and a.undercurl == attrs.undercurl and
-       a.italic == attrs.italic and a.reverse == attrs.reverse and
-       a.foreground == attrs.foreground and
-       a.background == attrs.background then
+    if equal_attrs(a, attrs) then
        return id
      end
+  end
+  if equal_attrs(attrs, {}) or
+      ignore == true or attr_index(ignore, attrs) ~= nil then
+    -- ignore this attrs
+    return nil
+  end
+  return "UNEXPECTED "..pprint_attrs(attrs)
+end
+
+function equal_attrs(a, b)
+    return a.bold == b.bold and a.standout == b.standout and
+       a.underline == b.underline and a.undercurl == b.undercurl and
+       a.italic == b.italic and a.reverse == b.reverse and
+       a.foreground == b.foreground and
+       a.background == b.background
+end
+
+function attr_index(attrs, attr)
+  if not attrs then
+    return nil
+  end
+  for i,a in pairs(attrs) do
+    if equal_attrs(a, attr) then
+      return i
+    end
   end
   return nil
 end

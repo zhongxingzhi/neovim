@@ -1,11 +1,27 @@
 require('coxpcall')
+local assert = require('luassert')
 local Loop = require('nvim.loop')
 local MsgpackStream = require('nvim.msgpack_stream')
 local AsyncSession = require('nvim.async_session')
 local Session = require('nvim.session')
 
 local nvim_prog = os.getenv('NVIM_PROG') or 'build/bin/nvim'
-local nvim_argv = {nvim_prog, '-u', 'NONE', '-i', 'NONE', '-N', '--embed'}
+local nvim_argv = {nvim_prog, '-u', 'NONE', '-i', 'NONE', '-N',
+                   '--cmd', 'set shortmess+=I background=light noswapfile noautoindent laststatus=1 encoding=utf-8',
+                   '--embed'}
+
+-- Formulate a path to the directory containing nvim.  We use this to
+-- help run test executables.  It helps to keep the tests working, even
+-- when the build is not in the default location.
+local nvim_dir = nvim_prog:gsub("[/\\][^/\\]+$", "")
+if nvim_dir == nvim_prog then
+    nvim_dir = "."
+end
+
+-- Nvim "Unit Under Test" http://en.wikipedia.org/wiki/Device_under_test
+local NvimUUT = {}
+NvimUUT.__index = NvimUUT
+
 local prepend_argv
 
 if os.getenv('VALGRIND') then
@@ -36,6 +52,10 @@ if prepend_argv then
 end
 
 local session, loop_running, loop_stopped, last_error
+
+local function set_session(s)
+  session = s
+end
 
 local function request(method, ...)
   local status, rv = session:request(method, ...)
@@ -109,6 +129,10 @@ local function nvim_eval(expr)
   return request('vim_eval', expr)
 end
 
+local function nvim_call(name, ...)
+  return request('vim_call_function', name, {...})
+end
+
 local function nvim_feed(input)
   while #input > 0 do
     local written = request('vim_input', input)
@@ -150,16 +174,25 @@ local function rawfeed(...)
   end
 end
 
-local function clear()
-  if session then
-    session:request('vim_command', 'qa!')
-    session:exit()
-  end
+local function spawn(argv)
   local loop = Loop.new()
   local msgpack_stream = MsgpackStream.new(loop)
   local async_session = AsyncSession.new(msgpack_stream)
-  session = Session.new(async_session)
-  loop:spawn(nvim_argv)
+  local session = Session.new(async_session)
+  loop:spawn(argv)
+  return session
+end
+
+local function clear(extra_cmd)
+  if session then
+    session:exit(0)
+  end
+  local args = {unpack(nvim_argv)}
+  if extra_cmd ~= nil then
+    table.insert(args, '--cmd')
+    table.insert(args, extra_cmd)
+  end
+  session = spawn(args)
 end
 
 local function insert(...)
@@ -182,12 +215,17 @@ local function execute(...)
   end
 end
 
+-- Dedent the given text and write it to the file name.
+local function write_file(name, text)
+  local file = io.open(name, 'w')
+  file:write(dedent(text))
+  file:flush()
+  file:close()
+end
+
 local function source(code)
   local tmpname = os.tmpname()
-  local tmpfile = io.open(tmpname, "w")
-  tmpfile:write(code)
-  tmpfile:flush()
-  tmpfile:close()
+  write_file(tmpname, code)
   nvim_command('source '..tmpname)
   os.remove(tmpname)
 end
@@ -206,6 +244,10 @@ end
 
 local function nvim(method, ...)
   return request('vim_'..method, ...)
+end
+
+local function nvim_async(method, ...)
+  session:notify('vim_'..method, ...)
 end
 
 local function buffer(method, ...)
@@ -228,11 +270,15 @@ local function curbuf(method, ...)
   return buffer(method, buf, ...)
 end
 
+local function wait()
+  session:request('vim_eval', '1')
+end
+
 local function curbuf_contents()
   -- Before inspecting the buffer, execute 'vim_eval' to wait until all
   -- previously sent keys are processed(vim_eval is a deferred function, and
   -- only processed after all input)
-  session:request('vim_eval', '1')
+  wait()
   return table.concat(curbuf('get_line_slice', 0, -1, true, true), '\n')
 end
 
@@ -256,10 +302,44 @@ local function expect(contents)
   return eq(dedent(contents), curbuf_contents())
 end
 
-clear()
+local function rmdir(path)
+  if lfs.attributes(path, 'mode') ~= 'directory' then
+    return nil
+  end
+  for file in lfs.dir(path) do
+    if file == '.' or file == '..' then
+      goto continue
+    end
+    ret, err = os.remove(path..'/'..file)
+    if not ret then
+      error('os.remove: '..err)
+      return nil
+    end
+    ::continue::
+  end
+  ret, err = os.remove(path)
+  if not ret then
+    error('os.remove: '..err)
+  end
+  return ret
+end
+
+local exc_exec = function(cmd)
+  nvim_command(([[
+    try
+      execute "%s"
+    catch
+      let g:__exception = v:exception
+    endtry
+  ]]):format(cmd:gsub('\n', '\\n'):gsub('[\\"]', '\\%0')))
+  local ret = nvim_eval('get(g:, "__exception", 0)')
+  nvim_command('unlet! g:__exception')
+  return ret
+end
 
 return {
   clear = clear,
+  spawn = spawn,
   dedent = dedent,
   source = source,
   rawfeed = rawfeed,
@@ -267,6 +347,7 @@ return {
   feed = feed,
   execute = execute,
   eval = nvim_eval,
+  call = nvim_call,
   command = nvim_command,
   request = request,
   next_message = next_message,
@@ -277,11 +358,19 @@ return {
   expect = expect,
   ok = ok,
   nvim = nvim,
+  nvim_async = nvim_async,
+  nvim_prog = nvim_prog,
+  nvim_dir = nvim_dir,
   buffer = buffer,
   window = window,
   tabpage = tabpage,
   curbuf = curbuf,
   curwin = curwin,
   curtab = curtab,
-  curbuf_contents = curbuf_contents
+  curbuf_contents = curbuf_contents,
+  wait = wait,
+  set_session = set_session,
+  write_file = write_file,
+  rmdir = rmdir,
+  exc_exec = exc_exec,
 }

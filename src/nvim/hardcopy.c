@@ -14,13 +14,13 @@
 #include <errno.h>
 #include <string.h>
 #include <inttypes.h>
+#include <stdint.h>
 
 #include "nvim/vim.h"
 #include "nvim/ascii.h"
 #ifdef HAVE_LOCALE_H
 # include <locale.h>
 #endif
-#include "nvim/version_defs.h"
 #include "nvim/hardcopy.h"
 #include "nvim/buffer.h"
 #include "nvim/charset.h"
@@ -32,7 +32,6 @@
 #include "nvim/memline.h"
 #include "nvim/memory.h"
 #include "nvim/message.h"
-#include "nvim/misc1.h"
 #include "nvim/misc2.h"
 #include "nvim/garray.h"
 #include "nvim/option.h"
@@ -40,7 +39,8 @@
 #include "nvim/screen.h"
 #include "nvim/strings.h"
 #include "nvim/syntax.h"
-#include "nvim/term.h"
+#include "nvim/ui.h"
+#include "nvim/version.h"
 #include "nvim/tempfile.h"
 #include "nvim/os/os.h"
 #include "nvim/os/input.h"
@@ -95,7 +95,7 @@
  * Sets the current position at the start of line "page_line".
  * If margin is TRUE start in the left margin (for header and line number).
  *
- * int mch_print_text_out(char_u *p, int len);
+ * int mch_print_text_out(char_u *p, size_t len);
  * Output one character of text p[len] at the current position.
  * Return TRUE if there is no room for another character in the same line.
  *
@@ -180,9 +180,9 @@ typedef struct {
 } prt_pos_T;
 
 struct prt_mediasize_S {
-  char        *name;
-  float width;                  /* width and height in points for portrait */
-  float height;
+  char *name;
+  double width;                  /* width and height in points for portrait */
+  double height;
 };
 
 /* PS font names, must be in Roman, Bold, Italic, Bold-Italic order */
@@ -317,7 +317,7 @@ static char_u *parse_list_options(char_u *option_str, option_table_T *table, int
     table[idx].present = TRUE;
 
     if (table[idx].hasnum) {
-      if (!VIM_ISDIGIT(*p))
+      if (!ascii_isdigit(*p))
         return (char_u *)N_("E552: digit expected");
 
       table[idx].number = getdigits_int(&p);
@@ -494,7 +494,6 @@ static void prt_header(prt_settings_T *psettings, int pagenum, linenr_T lnum)
   int page_line;
   char_u      *tbuf;
   char_u      *p;
-  int l;
 
   /* Also use the space for the line number. */
   if (prt_use_number())
@@ -541,9 +540,9 @@ static void prt_header(prt_settings_T *psettings, int pagenum, linenr_T lnum)
   page_line = 0 - prt_header_height();
   mch_print_start_line(TRUE, page_line);
   for (p = tbuf; *p != NUL; ) {
-    if (mch_print_text_out(p,
-            (l = (*mb_ptr2len)(p))
-            )) {
+    int l = (*mb_ptr2len)(p);
+    assert(l >= 0);
+    if (mch_print_text_out(p, (size_t)l)) {
       ++page_line;
       if (page_line >= 0)       /* out of room in header */
         break;
@@ -552,7 +551,7 @@ static void prt_header(prt_settings_T *psettings, int pagenum, linenr_T lnum)
     p += l;
   }
 
-  free(tbuf);
+  xfree(tbuf);
 
   if (psettings->do_syntax)
     /* Set colors for next character. */
@@ -572,7 +571,7 @@ static void prt_message(char_u *s)
 {
   screen_fill((int)Rows - 1, (int)Rows, 0, (int)Columns, ' ', ' ', 0);
   screen_puts(s, (int)Rows - 1, 0, hl_attr(HLF_R));
-  out_flush();
+  ui_flush();
 }
 
 void ex_hardcopy(exarg_T *eap)
@@ -616,10 +615,7 @@ void ex_hardcopy(exarg_T *eap)
           eap->forceit) == FAIL)
     return;
 
-  if (t_colors > 1)
-    settings.modec = 'c';
-  else
-    settings.modec = 't';
+  settings.modec = 'c';
 
   if (!syntax_present(curwin))
     settings.do_syntax = FALSE;
@@ -726,8 +722,7 @@ void ex_hardcopy(exarg_T *eap)
           if (got_int || settings.user_abort)
             goto print_fail;
 
-          assert(prtpos.bytes_printed == 0
-                 || prtpos.bytes_printed * 100 > prtpos.bytes_printed);
+          assert(prtpos.bytes_printed <= SIZE_MAX / 100);
           sprintf((char *)IObuff, _("Printing page %d (%zu%%)"),
                   page_count + 1 + side,
                   prtpos.bytes_printed * 100 / bytes_to_print);
@@ -827,7 +822,7 @@ static colnr_T hardcopy_line(prt_settings_T *psettings, int page_line, prt_pos_T
       prt_line_number(psettings, page_line, ppos->file_line);
     ppos->ff = FALSE;
   } else {
-    /* left over from wrap halfway a tab */
+    // left over from wrap halfway through a tab
     print_pos = ppos->print_pos;
     tab_spaces = ppos->lead_spaces;
   }
@@ -887,7 +882,7 @@ static colnr_T hardcopy_line(prt_settings_T *psettings, int page_line, prt_pos_T
       ppos->ff = TRUE;
       need_break = 1;
     } else {
-      need_break = mch_print_text_out(line + col, outputlen);
+      need_break = mch_print_text_out(line + col, (size_t)outputlen);
       if (has_mbyte)
         print_pos += (*mb_ptr2cells)(line + col);
       else
@@ -1537,14 +1532,14 @@ static int prt_find_resource(char *name, struct prt_ps_resource_S *resource)
   STRLCPY(resource->name, name, 64);
   /* Look for named resource file in runtimepath */
   STRCPY(buffer, "print");
-  add_pathsep(buffer);
+  add_pathsep((char *)buffer);
   vim_strcat(buffer, (char_u *)name, MAXPATHL);
   vim_strcat(buffer, (char_u *)".ps", MAXPATHL);
   resource->filename[0] = NUL;
   retval = (do_in_runtimepath(buffer, FALSE, prt_resource_name,
                 resource->filename)
             && resource->filename[0] != NUL);
-  free(buffer);
+  xfree(buffer);
   return retval;
 }
 
@@ -1926,7 +1921,7 @@ void mch_print_cleanup(void)
      */
     for (i = PRT_PS_FONT_ROMAN; i <= PRT_PS_FONT_BOLDOBLIQUE; i++) {
       if (prt_ps_mb_font.ps_fontname[i] != NULL)
-        free(prt_ps_mb_font.ps_fontname[i]);
+        xfree(prt_ps_mb_font.ps_fontname[i]);
       prt_ps_mb_font.ps_fontname[i] = NULL;
     }
   }
@@ -1941,7 +1936,7 @@ void mch_print_cleanup(void)
     prt_file_error = FALSE;
   }
   if (prt_ps_file_name != NULL) {
-    free(prt_ps_file_name);
+    xfree(prt_ps_file_name);
     prt_ps_file_name = NULL;
   }
 }
@@ -1991,8 +1986,8 @@ static void prt_page_margins(double width, double height, double *left, double *
 
 static void prt_font_metrics(int font_scale)
 {
-  prt_line_height = (float)font_scale;
-  prt_char_width = (float)PRT_PS_FONT_TO_USER(font_scale, prt_ps_font->wx);
+  prt_line_height = (double)font_scale;
+  prt_char_width = PRT_PS_FONT_TO_USER(font_scale, prt_ps_font->wx);
 }
 
 
@@ -2031,10 +2026,10 @@ static int prt_get_lpp(void)
    * font height (based on its bounding box) and the line height, handling the
    * case where the font height can exceed the line height.
    */
-  prt_bgcol_offset = (float)PRT_PS_FONT_TO_USER(prt_line_height,
+  prt_bgcol_offset = PRT_PS_FONT_TO_USER(prt_line_height,
       prt_ps_font->bbox_min_y);
   if ((prt_ps_font->bbox_max_y - prt_ps_font->bbox_min_y) < 1000.0) {
-    prt_bgcol_offset -= (float)PRT_PS_FONT_TO_USER(prt_line_height,
+    prt_bgcol_offset -= PRT_PS_FONT_TO_USER(prt_line_height,
         (1000.0 - (prt_ps_font->bbox_max_y -
                    prt_ps_font->bbox_min_y)) / 2);
   }
@@ -2099,10 +2094,6 @@ int mch_print_init(prt_settings_T *psettings, char_u *jobname, int forceit)
   int paper_strlen;
   int fontsize;
   char_u      *p;
-  double left;
-  double right;
-  double top;
-  double bottom;
   int props;
   int cmap = 0;
   char_u      *p_encoding;
@@ -2126,19 +2117,25 @@ int mch_print_init(prt_settings_T *psettings, char_u *jobname, int forceit)
   props = enc_canon_props(p_encoding);
   if (!(props & ENC_8BIT) && ((*p_pmcs != NUL) || !(props & ENC_UNICODE))) {
     p_mbenc_first = NULL;
+    int effective_cmap;
     for (cmap = 0; cmap < (int)ARRAY_SIZE(prt_ps_mbfonts); cmap++)
       if (prt_match_encoding((char *)p_encoding, &prt_ps_mbfonts[cmap],
-              &p_mbenc)) {
-        if (p_mbenc_first == NULL)
+                             &p_mbenc)) {
+        if (p_mbenc_first == NULL) {
           p_mbenc_first = p_mbenc;
-        if (prt_match_charset((char *)p_pmcs, &prt_ps_mbfonts[cmap],
-                &p_mbchar))
+          effective_cmap = cmap;
+        }
+        if (prt_match_charset((char *)p_pmcs, &prt_ps_mbfonts[cmap], &p_mbchar))
           break;
       }
 
     /* Use first encoding matched if no charset matched */
-    if (p_mbchar == NULL && p_mbenc_first != NULL)
+    if (p_mbenc_first != NULL && p_mbchar == NULL) {
       p_mbenc = p_mbenc_first;
+      cmap = effective_cmap;
+    }
+
+    assert(p_mbenc == NULL || cmap < (int)ARRAY_SIZE(prt_ps_mbfonts));
   }
 
   prt_out_mbyte = (p_mbenc != NULL);
@@ -2260,23 +2257,22 @@ int mch_print_init(prt_settings_T *psettings, char_u *jobname, int forceit)
     prt_page_height = prt_mediasize[i].width;
   }
 
-  /*
-   * Set PS page margins based on the PS pagesize, not the mediasize - this
-   * needs to be done before the cpl and lpp are calculated.
-   */
+  // Set PS page margins based on the PS pagesize, not the mediasize - this
+  // needs to be done before the cpl and lpp are calculated.
+  double left, right, top, bottom;
   prt_page_margins(prt_page_width, prt_page_height, &left, &right, &top,
       &bottom);
-  prt_left_margin = (float)left;
-  prt_right_margin = (float)right;
-  prt_top_margin = (float)top;
-  prt_bottom_margin = (float)bottom;
+  prt_left_margin = left;
+  prt_right_margin = right;
+  prt_top_margin = top;
+  prt_bottom_margin = bottom;
 
   /*
    * Set up the font size.
    */
   fontsize = PRT_PS_DEFAULT_FONTSIZE;
   for (p = p_pfn; (p = vim_strchr(p, ':')) != NULL; ++p)
-    if (p[1] == 'h' && VIM_ISDIGIT(p[2]))
+    if (p[1] == 'h' && ascii_isdigit(p[2]))
       fontsize = atoi((char *)p + 2);
   prt_font_metrics(fontsize);
 
@@ -2346,7 +2342,7 @@ int mch_print_init(prt_settings_T *psettings, char_u *jobname, int forceit)
     p = expand_env_save(psettings->outfile);
     if (p != NULL) {
       prt_ps_fd = mch_fopen((char *)p, WRITEBIN);
-      free(p);
+      xfree(p);
     }
   }
   if (prt_ps_fd == NULL) {
@@ -2443,7 +2439,7 @@ int mch_print_begin(prt_settings_T *psettings)
     STRCPY(buffer, "Unknown");
   }
   prt_dsc_textline("For", buffer);
-  prt_dsc_textline("Creator", NVIM_VERSION_LONG);
+  prt_dsc_textline("Creator", longVersion);
   /* Note: to ensure Clean8bit I don't think we can use LC_TIME */
   now = time(NULL);
   p_time = ctime(&now);
@@ -2873,7 +2869,7 @@ void mch_print_start_line(int margin, int page_line)
   prt_half_width = FALSE;
 }
 
-int mch_print_text_out(char_u *p, int len)
+int mch_print_text_out(char_u *p, size_t len)
 {
   int need_break;
   char_u ch;
@@ -3036,7 +3032,7 @@ int mch_print_text_out(char_u *p, int len)
 
   /* Need to free any translated characters */
   if (prt_do_conv)
-    free(p);
+    xfree(p);
 
   prt_text_run += char_width;
   prt_pos_x += char_width;

@@ -41,7 +41,6 @@
 #include "nvim/spell.h"
 #include "nvim/syntax.h"
 #include "nvim/tag.h"
-#include "nvim/term.h"
 #include "nvim/window.h"
 #include "nvim/os/os.h"
 #include "nvim/os/shell.h"
@@ -138,7 +137,7 @@ char_u *vim_strsave_shellescape(const char_u *string,
 {
   char_u      *d;
   char_u      *escaped_string;
-  int l;
+  size_t l;
   int csh_like;
 
   /* Only csh and similar shells expand '!' within single quotes.  For sh and
@@ -190,7 +189,7 @@ char_u *vim_strsave_shellescape(const char_u *string,
     }
     if (do_special && find_cmdline_var(p, &l) >= 0) {
       *d++ = '\\';                    /* insert backslash */
-      while (--l >= 0)                /* copy the var */
+      while (--l != SIZE_MAX)                /* copy the var */
         *d++ = *p++;
       continue;
     }
@@ -270,7 +269,7 @@ char_u *strup_save(const char_u *orig)
         memcpy(s, res, (size_t)(p - res));
         STRCPY(s + (p - res) + newl, p + l);
         p = s + (p - res);
-        free(res);
+        xfree(res);
         res = s;
       }
 
@@ -296,19 +295,8 @@ void del_trailing_spaces(char_u *ptr)
   char_u      *q;
 
   q = ptr + STRLEN(ptr);
-  while (--q > ptr && vim_iswhite(q[0]) && q[-1] != '\\' && q[-1] != Ctrl_V)
+  while (--q > ptr && ascii_iswhite(q[0]) && q[-1] != '\\' && q[-1] != Ctrl_V)
     *q = NUL;
-}
-
-/*
- * Like strncpy(), but always terminate the result with one NUL.
- * "to" must be "len + 1" long!
- */
-void vim_strncpy(char_u *restrict to, const char_u *restrict from, size_t len)
-  FUNC_ATTR_NONNULL_ALL
-{
-  STRNCPY(to, from, len);
-  to[len] = NUL;
 }
 
 /*
@@ -459,16 +447,6 @@ char_u *vim_strrchr(const char_u *string, int c)
     mb_ptr_adv(p);
   }
   return (char_u *) retval;
-}
-
-/*
- * Vim has its own isspace() function, because on some machines isspace()
- * can't handle characters above 128.
- */
-bool vim_isspace(int x)
-  FUNC_ATTR_CONST
-{
-  return (x >= 9 && x <= 13) || x == ' ';
 }
 
 /*

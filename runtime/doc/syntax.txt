@@ -1,4 +1,4 @@
-*syntax.txt*	For Vim version 7.4.  Last change: 2014 Sep 09
+*syntax.txt*	For Vim version 7.4.  Last change: 2014 Nov 19
 
 
 		  VIM REFERENCE MANUAL	  by Bram Moolenaar
@@ -38,11 +38,6 @@ In the User Manual:
 16. Window-local syntax		|:ownsyntax|
 17. Color xterms		|xterm-color|
 18. When syntax is slow		|:syntime|
-
-{Vi does not have any of these commands}
-
-Syntax highlighting is not available when the |+syntax| feature has been
-disabled at compile time.
 
 ==============================================================================
 1. Quick start						*:syn-qstart*
@@ -3221,16 +3216,10 @@ The g:vimsyn_embed option allows users to select what, if any, types of
 embedded script highlighting they wish to have. >
 
    g:vimsyn_embed == 0   : don't embed any scripts
-   g:vimsyn_embed =~ 'm' : support embedded mzscheme
-   g:vimsyn_embed =~ 'p' : support embedded perl
    g:vimsyn_embed =~ 'P' : support embedded python
-   g:vimsyn_embed =~ 'r' : support embedded ruby
-   g:vimsyn_embed =~ 't' : support embedded tcl
 <
 By default, g:vimsyn_embed is a string supporting interpreters that your vim
-itself supports.  Concatenate multiple characters to support multiple types
-of embedded interpreters; ie. g:vimsyn_embed= "mp" supports embedded mzscheme
-and embedded perl.
+itself supports.
 						*g:vimsyn_folding*
 
 Some folding is now supported with syntax/vim.vim: >
@@ -3238,11 +3227,7 @@ Some folding is now supported with syntax/vim.vim: >
    g:vimsyn_folding == 0 or doesn't exist: no syntax-based folding
    g:vimsyn_folding =~ 'a' : augroups
    g:vimsyn_folding =~ 'f' : fold functions
-   g:vimsyn_folding =~ 'm' : fold mzscheme script
-   g:vimsyn_folding =~ 'p' : fold perl     script
    g:vimsyn_folding =~ 'P' : fold python   script
-   g:vimsyn_folding =~ 'r' : fold ruby     script
-   g:vimsyn_folding =~ 't' : fold tcl      script
 <
 							*g:vimsyn_noerror*
 Not all error highlighting that syntax/vim.vim does may be correct; VimL is a
@@ -3799,7 +3784,7 @@ The 'foldnestmax' option limits the nesting of syntax folds.
 
 
 			*:syn-contains* *E405* *E406* *E407* *E408* *E409*
-contains={groupname},..
+contains={group-name},..
 
 The "contains" argument is followed by a list of syntax group names.  These
 groups will be allowed to begin inside the item (they may extend past the
@@ -3852,13 +3837,13 @@ region where contained items do match.	Note that this may also limit the
 area that is highlighted
 
 
-containedin={groupname}...				*:syn-containedin*
+containedin={group-name}...				*:syn-containedin*
 
 The "containedin" argument is followed by a list of syntax group names.  The
 item will be allowed to begin inside these groups.  This works as if the
 containing item has a "contains=" argument that includes this item.
 
-The {groupname}... can be used just like for "contains", as explained above.
+The {group-name}... can be used just like for "contains", as explained above.
 
 This is useful when adding a syntax item afterwards.  An item can be told to
 be included inside an already existing item, without changing the definition
@@ -3874,7 +3859,7 @@ keywords never contain another item, thus adding them to "containedin" won't
 work.
 
 
-nextgroup={groupname},..				*:syn-nextgroup*
+nextgroup={group-name},..				*:syn-nextgroup*
 
 The "nextgroup" argument is followed by a list of syntax group names,
 separated by commas (just like with "contains", so you can also use patterns).
@@ -3960,7 +3945,7 @@ See |pattern| for the explanation of what a pattern is.  Syntax patterns are
 always interpreted like the 'magic' option is set, no matter what the actual
 value of 'magic' is.  And the patterns are interpreted like the 'l' flag is
 not included in 'cpoptions'.  This was done to make syntax files portable and
-independent of 'compatible' and 'magic' settings.
+independent of the 'magic' setting.
 
 Try to avoid patterns that can match an empty string, such as "[a-z]*".
 This slows down the highlighting a lot, because it matches everywhere.
@@ -4075,8 +4060,8 @@ the match doesn't move to another line.
 The skip pattern can include the "\n", but the search for an end pattern will
 continue in the first character of the next line, also when that character is
 matched by the skip pattern.  This is because redrawing may start in any line
-halfway a region and there is no check if the skip pattern started in a
-previous line.	For example, if the skip pattern is "a\nb" and an end pattern
+halfway in a region and there is no check if the skip pattern started in a
+previous line. For example, if the skip pattern is "a\nb" and an end pattern
 is "b", the end pattern does match in the second line of this: >
 	 x x a
 	 b x x
@@ -4527,7 +4512,7 @@ term={attr-list}			*attr-list* *highlight-term* *E418*
 	following items (in any order):
 		bold
 		underline
-		undercurl	not always available
+		undercurl	a curly underline
 		reverse
 		inverse		same as reverse
 		italic
@@ -4536,9 +4521,8 @@ term={attr-list}			*attr-list* *highlight-term* *E418*
 
 	Note that "bold" can be used here and by using a bold font.  They
 	have the same effect.
-	"undercurl" is a curly underline.  When "undercurl" is not possible
-	then "underline" is used.  In general "undercurl" is only available in
-	the GUI.  The color is set with |highlight-guisp|.
+	If running in a terminal, "undercurl" acts as an alias for "underline".
+	It is set using |highlight-guisp|.
 
 start={term-list}				*highlight-start* *E422*
 stop={term-list}				*term-list* *highlight-stop*
@@ -4761,6 +4745,13 @@ DiffChange	diff mode: Changed line |diff.txt|
 DiffDelete	diff mode: Deleted line |diff.txt|
 							*hl-DiffText*
 DiffText	diff mode: Changed text within a changed line |diff.txt|
+						 {Nvim} *hl-EndOfBuffer*
+EndOfBuffer	filler lines (~) after the end of the buffer.
+		By default, this is highlighted like |hl-NonText|.
+						 {Nvim} *hl-TermCursor*
+TermCursor	cursor in a focused terminal
+						 {Nvim} *hl-TermCursorNC*
+TermCursorNC	cursor in an unfocused terminal
 							*hl-ErrorMsg*
 ErrorMsg	error messages on the command line
 							*hl-VertSplit*
@@ -4789,10 +4780,10 @@ ModeMsg		'showmode' message (e.g., "-- INSERT --")
 							*hl-MoreMsg*
 MoreMsg		|more-prompt|
 							*hl-NonText*
-NonText		'~' and '@' at the end of the window, characters from
-		'showbreak' and other characters that do not really exist in
-		the text (e.g., ">" displayed when a double-wide character
-		doesn't fit at the end of the line).
+NonText		'@' at the end of the window, characters from 'showbreak' 
+		and other characters that do not really exist in the text 
+		(e.g., ">" displayed when a double-wide character doesn't 
+		fit at the end of the line). See also |hl-EndOfBuffer|.
 							*hl-Normal*
 Normal		normal text
 							*hl-Pmenu*
@@ -4845,8 +4836,7 @@ Title		titles for output from ":set all", ":autocmd" etc.
 							*hl-Visual*
 Visual		Visual mode selection
 							*hl-VisualNOS*
-VisualNOS	Visual mode selection when vim is "Not Owning the Selection".
-		Only X11 Gui's |gui-x11| and |xterm-clipboard| supports this.
+VisualNOS	Removed. |vim-differences| {Nvim}
 							*hl-WarningMsg*
 WarningMsg	warning messages
 							*hl-WildMenu*
@@ -5065,6 +5055,7 @@ This will set the "w:current_syntax" variable to "foo".  The value of
 restoring "b:current_syntax", since the syntax files do set
 "b:current_syntax".  The value set by the syntax file is assigned to
 "w:current_syntax".
+Note: This resets the 'spell', 'spellcapcheck' and 'spellfile' options.
 
 Once a window has its own syntax, syntax commands executed from other windows
 on the same buffer (including :syntax clear) have no effect. Conversely,
